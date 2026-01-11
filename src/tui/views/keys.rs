@@ -1,0 +1,203 @@
+//! SSH key management view
+
+use crate::app::{App, RenderState};
+use ratatui::prelude::*;
+use ratatui::widgets::{Block, Borders, Paragraph, Row, Table, Cell, Padding};
+
+/// Render keys view with RenderState
+pub fn render_state(frame: &mut Frame, state: &RenderState, area: Rect) {
+    let theme = &state.theme;
+    
+    let title = Line::from(vec![
+        Span::styled(" 󰌋 ", theme.title()),
+        Span::styled("SSH Keys", theme.title()),
+    ]);
+    
+    let block = Block::default()
+        .title(title)
+        .borders(Borders::ALL)
+        .border_style(theme.border_focus())
+        .padding(Padding::uniform(1))
+        .style(Style::default().bg(theme.bg_panel()));
+    
+    let inner = block.inner(area);
+    frame.render_widget(block, area);
+    
+    let empty_text = vec![
+        Line::from(""),
+        Line::from(vec![
+            Span::styled("  No SSH keys found in ~/.ssh/", theme.text_dim()),
+        ]),
+        Line::from(""),
+        Line::from(vec![
+            Span::styled("  Press ", theme.text_dim()),
+            Span::styled("n", theme.key_hint()),
+            Span::styled(" to generate a new key", theme.text_dim()),
+        ]),
+    ];
+    frame.render_widget(Paragraph::new(empty_text), inner);
+}
+
+/// Render the keys view
+pub fn render(frame: &mut Frame, app: &App, area: Rect) {
+    let theme = &app.theme;
+    
+    let title = Line::from(vec![
+        Span::styled(" 󰌋 ", theme.title()),
+        Span::styled("SSH Keys", theme.title()),
+        Span::styled(" ", theme.title()),
+    ]);
+    
+    let block = Block::default()
+        .title(title)
+        .borders(Borders::ALL)
+        .border_style(theme.border_focus())
+        .padding(Padding::uniform(1))
+        .style(Style::default().bg(theme.bg_panel()));
+    
+    let inner = block.inner(area);
+    frame.render_widget(block, area);
+    
+    // Key table header
+    let header = Row::new(vec![
+        Cell::from("Type").style(theme.text_dim()),
+        Cell::from("Name").style(theme.text_dim()),
+        Cell::from("Fingerprint").style(theme.text_dim()),
+        Cell::from("Comment").style(theme.text_dim()),
+        Cell::from("Encrypted").style(theme.text_dim()),
+    ]);
+    
+    // Sample key data (would come from KeyManager)
+    let rows = vec![
+        create_key_row("ED25519", "id_ed25519", "SHA256:abc123...", "user@hostname", false, theme, true),
+        create_key_row("RSA", "id_rsa", "SHA256:def456...", "backup key", true, theme, false),
+        create_key_row("ED25519", "github", "SHA256:ghi789...", "github auth", false, theme, false),
+    ];
+    
+    let widths = [
+        Constraint::Length(10),  // Type
+        Constraint::Length(15),  // Name
+        Constraint::Length(20),  // Fingerprint
+        Constraint::Min(15),     // Comment
+        Constraint::Length(10),  // Encrypted
+    ];
+    
+    if rows.is_empty() {
+        let empty_text = vec![
+            Line::from(""),
+            Line::from(vec![
+                Span::styled("  No SSH keys found in ~/.ssh/", theme.text_dim()),
+            ]),
+            Line::from(""),
+            Line::from(vec![
+                Span::styled("  Press ", theme.text_dim()),
+                Span::styled("n", theme.key_hint()),
+                Span::styled(" to generate a new key", theme.text_dim()),
+            ]),
+            Line::from(vec![
+                Span::styled("  Press ", theme.text_dim()),
+                Span::styled("i", theme.key_hint()),
+                Span::styled(" to import an existing key", theme.text_dim()),
+            ]),
+        ];
+        let empty = Paragraph::new(empty_text);
+        frame.render_widget(empty, inner);
+    } else {
+        // Split area for table and details
+        let chunks = Layout::default()
+            .direction(Direction::Vertical)
+            .constraints([
+                Constraint::Percentage(60),
+                Constraint::Percentage(40),
+            ])
+            .split(inner);
+        
+        let table = Table::new(rows, widths)
+            .header(header)
+            .highlight_style(theme.selected());
+        
+        frame.render_widget(table, chunks[0]);
+        
+        // Key details / actions
+        render_key_details(frame, app, chunks[1]);
+    }
+}
+
+/// Create a key row
+fn create_key_row<'a>(
+    key_type: &'a str,
+    name: &'a str,
+    fingerprint: &'a str,
+    comment: &'a str,
+    encrypted: bool,
+    theme: &crate::tui::Theme,
+    is_selected: bool,
+) -> Row<'a> {
+    let base_style = if is_selected {
+        theme.selected()
+    } else {
+        theme.text()
+    };
+    
+    let type_style = Style::default().fg(match key_type {
+        "ED25519" => theme.accent_success(),
+        "RSA" => theme.accent_primary(),
+        "ECDSA" => theme.accent_info(),
+        _ => theme.fg_dim(),
+    });
+    
+    let encrypted_text = if encrypted { "🔒 Yes" } else { "🔓 No" };
+    let encrypted_style = Style::default().fg(if encrypted { theme.accent_warning() } else { theme.fg_dim() });
+    
+    Row::new(vec![
+        Cell::from(key_type).style(type_style),
+        Cell::from(name).style(base_style),
+        Cell::from(fingerprint).style(theme.text_dim()),
+        Cell::from(comment).style(theme.text()),
+        Cell::from(encrypted_text).style(encrypted_style),
+    ])
+}
+
+/// Render key details panel
+fn render_key_details(frame: &mut Frame, app: &App, area: Rect) {
+    let theme = &app.theme;
+    
+    let block = Block::default()
+        .title(" Key Details ")
+        .borders(Borders::TOP)
+        .border_style(theme.border_normal())
+        .style(Style::default().bg(theme.bg_panel()));
+    
+    let inner = block.inner(area);
+    frame.render_widget(block, area);
+    
+    let details = vec![
+        Line::from(""),
+        Line::from(vec![
+            Span::styled("  Actions: ", Style::default().add_modifier(Modifier::BOLD).fg(theme.fg_bright())),
+        ]),
+        Line::from(vec![
+            Span::styled("  ", theme.text()),
+            Span::styled("v", theme.key_hint()),
+            Span::styled(" View public key  ", theme.text()),
+            Span::styled("c", theme.key_hint()),
+            Span::styled(" Copy to clipboard  ", theme.text()),
+            Span::styled("d", theme.key_hint()),
+            Span::styled(" Delete  ", theme.text()),
+        ]),
+        Line::from(""),
+        Line::from(vec![
+            Span::styled("  Generate: ", Style::default().add_modifier(Modifier::BOLD).fg(theme.fg_bright())),
+        ]),
+        Line::from(vec![
+            Span::styled("  ", theme.text()),
+            Span::styled("n", theme.key_hint()),
+            Span::styled(" New ED25519 (recommended)  ", theme.text()),
+            Span::styled("N", theme.key_hint()),
+            Span::styled(" New RSA-4096", theme.text()),
+        ]),
+    ];
+    
+    let paragraph = Paragraph::new(details);
+    frame.render_widget(paragraph, inner);
+}
