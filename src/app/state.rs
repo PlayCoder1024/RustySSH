@@ -2,7 +2,7 @@
 
 use crate::config::{Config, HostConfig};
 use crate::ssh::{SessionManager, SshConnection, ConnectionPool};
-use crate::tui::{Tui, Theme};
+use crate::tui::{Tui, Theme, Icons};
 use super::{AppEvent, EventHandler};
 use anyhow::{anyhow, Result};
 use crossterm::event::{KeyCode, KeyModifiers};
@@ -48,6 +48,7 @@ pub struct SessionInfo {
 pub struct RenderState {
     pub view: View,
     pub theme: Theme,
+    pub icons: Icons,
     pub config: Config,
     pub sessions: Vec<SessionInfo>,
     pub active_session: Option<Uuid>,
@@ -90,6 +91,8 @@ pub struct App {
     events: EventHandler,
     /// Theme
     pub theme: Theme,
+    /// Icons (Nerd Font or ASCII)
+    pub icons: Icons,
 }
 
 impl App {
@@ -97,6 +100,7 @@ impl App {
     pub async fn new() -> Result<Self> {
         let config = Config::load().await?;
         let theme = Theme::default();
+        let icons = Icons::detect();
         let tui = Tui::new()?;
         let events = EventHandler::new(Duration::from_millis(50));
 
@@ -113,6 +117,7 @@ impl App {
             tui,
             events,
             theme,
+            icons,
         })
     }
 
@@ -143,6 +148,7 @@ impl App {
             let render_state = RenderState {
                 view: self.view,
                 theme: self.theme.clone(),
+                icons: self.icons.clone(),
                 config: self.config.clone(),
                 sessions: self.sessions.list().iter().map(|s| SessionInfo {
                     id: s.id,

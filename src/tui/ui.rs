@@ -123,16 +123,17 @@ fn render_status_bar(frame: &mut Frame, app: &App, area: Rect) {
 /// Render the status bar with RenderState
 fn render_status_bar_state(frame: &mut Frame, state: &RenderState, area: Rect) {
     let style = state.theme.status_bar();
+    let kb = state.icons.keyboard;
     
-    // Left side: View-specific hints
+    // Left side: View-specific hints (using dynamic keyboard icon)
     let hints = match state.view {
-        View::Connections => "󰌑 Enter:Connect  e:Edit  n:New  d:Delete  t:Tunnels  f:SFTP  k:Keys  ?:Help",
-        View::Session => "󰌑 Shift+Esc:Back  Ctrl+C:Disconnect",
-        View::Sftp => "󰌑 Tab:Switch  Enter:Open  c:Copy  m:Move  d:Delete  Esc:Back",
-        View::Tunnels => "󰌑 Enter:Toggle  n:New  d:Delete  Esc:Back",
-        View::Keys => "󰌑 Enter:View  n:Generate  i:Import  d:Delete  Esc:Back",
-        View::Settings => "󰌑 Enter:Edit  Esc:Back",
-        View::Help => "󰌑 Esc/q/?:Close",
+        View::Connections => format!("{}Enter:Connect  e:Edit  n:New  d:Delete  t:Tunnels  f:SFTP  K:Keys  ?:Help", kb),
+        View::Session => format!("{}Shift+Esc:Back  Ctrl+C:Disconnect", kb),
+        View::Sftp => format!("{}Tab:Switch  Enter:Open  c:Copy  m:Move  d:Delete  Esc:Back", kb),
+        View::Tunnels => format!("{}Enter:Toggle  n:New  d:Delete  Esc:Back", kb),
+        View::Keys => format!("{}Enter:View  n:Generate  i:Import  d:Delete  Esc:Back", kb),
+        View::Settings => format!("{}Enter:Edit  Esc:Back", kb),
+        View::Help => format!("{}Esc/q/?:Close", kb),
     };
     
     // Right side: Session count and status

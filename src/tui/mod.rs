@@ -1,6 +1,7 @@
 //! Terminal UI module
 
 mod theme;
+mod icons;
 pub mod ui;
 pub mod views;
 pub mod widgets;
@@ -15,6 +16,7 @@ use ratatui::prelude::*;
 use std::io::{self, stdout, Stdout};
 
 pub use theme::Theme;
+pub use icons::Icons;
 pub use ui::{render, render_with_state};
 
 /// Terminal wrapper for ratatui

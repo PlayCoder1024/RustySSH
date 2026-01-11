@@ -26,9 +26,10 @@ pub fn render_state(frame: &mut Frame, state: &RenderState, area: Rect) {
 
 fn render_host_list_state(frame: &mut Frame, state: &RenderState, area: Rect) {
     let theme = &state.theme;
+    let icons = &state.icons;
     
     let title = Line::from(vec![
-        Span::styled(" 󰢹 ", theme.title()),
+        Span::styled(format!(" {} ", icons.connections), theme.title()),
         Span::styled("Connections", theme.title()),
         Span::styled(" ", theme.title()),
     ]);
@@ -52,7 +53,7 @@ fn render_host_list_state(frame: &mut Frame, state: &RenderState, area: Rect) {
         if group.expanded {
             for host in &group.hosts {
                 let is_selected = host_idx == state.selected_host_index;
-                let line = format_host_line_with_selection(host, theme, is_selected);
+                let line = format_host_line_with_selection(host, theme, icons, is_selected);
                 items.push(ListItem::new(line));
                 host_idx += 1;
             }
@@ -61,7 +62,7 @@ fn render_host_list_state(frame: &mut Frame, state: &RenderState, area: Rect) {
     
     for host in &state.config.hosts {
         let is_selected = host_idx == state.selected_host_index;
-        let line = format_host_line_with_selection(host, theme, is_selected);
+        let line = format_host_line_with_selection(host, theme, icons, is_selected);
         items.push(ListItem::new(line));
         host_idx += 1;
     }
@@ -103,16 +104,21 @@ fn render_host_list_state(frame: &mut Frame, state: &RenderState, area: Rect) {
 }
 
 /// Format a single host line with selection state
-fn format_host_line_with_selection(host: &crate::config::HostConfig, theme: &crate::tui::Theme, is_selected: bool) -> Line<'static> {
+fn format_host_line_with_selection(
+    host: &crate::config::HostConfig, 
+    theme: &crate::tui::Theme, 
+    icons: &crate::tui::Icons,
+    is_selected: bool
+) -> Line<'static> {
     // Status indicator
-    let status_icon = "○ "; // ● for connected
+    let status_icon = icons.disconnected;
     
     // Auth method icon
     let auth_icon = match &host.auth {
-        crate::config::AuthMethod::Password => "󰌆 ",
-        crate::config::AuthMethod::KeyFile { .. } => "󰌋 ",
-        crate::config::AuthMethod::Agent => "󰌉 ",
-        crate::config::AuthMethod::Certificate { .. } => "󰄤 ",
+        crate::config::AuthMethod::Password => icons.password,
+        crate::config::AuthMethod::KeyFile { .. } => icons.key_file,
+        crate::config::AuthMethod::Agent => icons.agent,
+        crate::config::AuthMethod::Certificate { .. } => icons.certificate,
     };
     
     let (prefix, name_style, conn_style) = if is_selected {
@@ -122,9 +128,9 @@ fn format_host_line_with_selection(host: &crate::config::HostConfig, theme: &cra
     };
     
     Line::from(vec![
-        Span::styled(prefix, if is_selected { theme.selected() } else { theme.text() }),
-        Span::styled(status_icon, theme.text_dim()),
-        Span::styled(auth_icon, Style::default().fg(theme.accent_info())),
+        Span::styled(prefix.to_string(), if is_selected { theme.selected() } else { theme.text() }),
+        Span::styled(status_icon.to_string(), theme.text_dim()),
+        Span::styled(auth_icon.to_string(), Style::default().fg(theme.accent_info())),
         Span::styled(host.name.clone(), name_style),
         Span::styled(format!("  {}", host.connection_string()), conn_style),
     ])
@@ -132,9 +138,10 @@ fn format_host_line_with_selection(host: &crate::config::HostConfig, theme: &cra
 
 fn render_details_panel_state(frame: &mut Frame, state: &RenderState, area: Rect) {
     let theme = &state.theme;
+    let icons = &state.icons;
     
     let title = Line::from(vec![
-        Span::styled(" 󰋼 ", theme.title()),
+        Span::styled(format!(" {} ", icons.info), theme.title()),
         Span::styled("Details", theme.title()),
         Span::styled(" ", theme.title()),
     ]);
