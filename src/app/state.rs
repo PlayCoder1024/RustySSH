@@ -1,12 +1,15 @@
 //! Application state management
 
-use crate::config::Config;
-use crate::ssh::SessionManager;
+use crate::config::{Config, HostConfig};
+use crate::ssh::{SessionManager, SshConnection, ConnectionPool};
 use crate::tui::{Tui, Theme};
 use super::{AppEvent, EventHandler};
-use anyhow::Result;
+use anyhow::{anyhow, Result};
 use crossterm::event::{KeyCode, KeyModifiers};
+use std::collections::HashMap;
+use std::io::Read;
 use std::time::Duration;
+use tokio::sync::mpsc;
 use uuid::Uuid;
 
 /// Current application view
@@ -49,6 +52,16 @@ pub struct RenderState {
     pub sessions: Vec<SessionInfo>,
     pub active_session: Option<Uuid>,
     pub status_message: Option<String>,
+    pub selected_host_index: usize,
+    pub host_count: usize,
+}
+
+/// Active SSH channel for a session
+pub struct ActiveChannel {
+    pub session_id: Uuid,
+    pub connection_id: Uuid,
+    /// Channel for sending data to SSH
+    pub input_tx: mpsc::UnboundedSender<Vec<u8>>,
 }
 
 /// Main application struct
@@ -59,12 +72,18 @@ pub struct App {
     pub state: AppState,
     /// Configuration
     pub config: Config,
-    /// SSH session manager
+    /// SSH session manager (terminal emulation)
     pub sessions: SessionManager,
+    /// SSH connection pool
+    pub connections: ConnectionPool,
+    /// Active channels mapped by session ID
+    pub channels: HashMap<Uuid, ActiveChannel>,
     /// Active session ID (if in session view)
     pub active_session: Option<Uuid>,
     /// Status message
     pub status_message: Option<String>,
+    /// Selected host index in connections view
+    pub selected_host_index: usize,
     /// Terminal UI
     tui: Tui,
     /// Event handler
@@ -79,19 +98,39 @@ impl App {
         let config = Config::load().await?;
         let theme = Theme::default();
         let tui = Tui::new()?;
-        let events = EventHandler::new(Duration::from_millis(100));
+        let events = EventHandler::new(Duration::from_millis(50));
 
         Ok(Self {
             view: View::default(),
             state: AppState::default(),
             config,
             sessions: SessionManager::new(),
+            connections: ConnectionPool::new(),
+            channels: HashMap::new(),
             active_session: None,
             status_message: None,
+            selected_host_index: 0,
             tui,
             events,
             theme,
         })
+    }
+
+    /// Get all hosts (groups + ungrouped)
+    fn all_hosts(&self) -> Vec<&HostConfig> {
+        let mut hosts: Vec<&HostConfig> = Vec::new();
+        for group in &self.config.groups {
+            if group.expanded {
+                hosts.extend(group.hosts.iter());
+            }
+        }
+        hosts.extend(self.config.hosts.iter());
+        hosts
+    }
+
+    /// Get selected host
+    fn selected_host(&self) -> Option<&HostConfig> {
+        self.all_hosts().get(self.selected_host_index).copied()
     }
 
     /// Run the main application loop
@@ -114,6 +153,8 @@ impl App {
                 }).collect(),
                 active_session: self.active_session,
                 status_message: self.status_message.clone(),
+                selected_host_index: self.selected_host_index,
+                host_count: self.all_hosts().len(),
             };
 
             // Render UI
@@ -157,7 +198,9 @@ impl App {
                 self.sessions.process_data(session_id, &data).await?;
             }
             AppEvent::SshDisconnected { session_id, reason } => {
-                self.status_message = Some(format!("Session disconnected: {}", reason));
+                self.status_message = Some(format!("Disconnected: {}", reason));
+                self.channels.remove(&session_id);
+                self.sessions.remove(session_id);
                 if self.active_session == Some(session_id) {
                     self.view = View::Connections;
                     self.active_session = None;
@@ -187,6 +230,8 @@ impl App {
     }
 
     async fn handle_connections_key(&mut self, key: crossterm::event::KeyEvent) -> Result<()> {
+        let host_count = self.all_hosts().len();
+        
         match key.code {
             KeyCode::Char('q') => self.state = AppState::Quit,
             KeyCode::Char('?') => self.view = View::Help,
@@ -194,26 +239,192 @@ impl App {
             KeyCode::Char('k') => self.view = View::Keys,
             KeyCode::Char('t') => self.view = View::Tunnels,
             KeyCode::Char('f') => self.view = View::Sftp,
+            KeyCode::Up | KeyCode::Char('k') => {
+                if self.selected_host_index > 0 {
+                    self.selected_host_index -= 1;
+                }
+            }
+            KeyCode::Down | KeyCode::Char('j') => {
+                if self.selected_host_index + 1 < host_count {
+                    self.selected_host_index += 1;
+                }
+            }
+            KeyCode::Home | KeyCode::Char('g') => {
+                self.selected_host_index = 0;
+            }
+            KeyCode::End | KeyCode::Char('G') => {
+                if host_count > 0 {
+                    self.selected_host_index = host_count - 1;
+                }
+            }
             KeyCode::Enter => {
-                // TODO: Connect to selected host
+                // Connect to selected host
+                if let Some(host) = self.selected_host().cloned() {
+                    self.connect_to_host(host).await?;
+                }
             }
             _ => {}
         }
         Ok(())
     }
 
-    async fn handle_session_key(&mut self, key: crossterm::event::KeyEvent) -> Result<()> {
-        if let Some(session_id) = self.active_session {
-            // Forward key to SSH session
-            let data = self.key_to_bytes(&key);
-            if !data.is_empty() {
-                self.sessions.send_data(session_id, &data).await?;
+    /// Connect to a host and open a session
+    async fn connect_to_host(&mut self, host: HostConfig) -> Result<()> {
+        self.status_message = Some(format!("Connecting to {}...", host.name));
+        
+        // Get terminal size
+        let size = self.tui.size()?;
+        let cols = size.width as u32;
+        let rows = size.height.saturating_sub(2) as u32; // Leave room for status bar
+        
+        // Clone host name for later use
+        let host_name = host.name.clone();
+        let host_id = host.id;
+        
+        // Perform connection in blocking context
+        let connection_result = tokio::task::spawn_blocking(move || {
+            // TODO: For password auth, we'd need to prompt the user
+            // For now, try agent auth first
+            SshConnection::connect(host, None, None)
+        }).await?;
+        
+        match connection_result {
+            Ok(mut connection) => {
+                let connection_id = connection.id;
+                
+                // Open shell channel
+                match connection.open_shell(cols, rows) {
+                    Ok(channel) => {
+                        // Create session for terminal emulation
+                        let session_id = self.sessions.create_session(
+                            host_id,
+                            host_name.clone(),
+                            size.width,
+                            size.height.saturating_sub(2),
+                        );
+                        
+                        // Set up channel I/O
+                        let (input_tx, mut input_rx) = mpsc::unbounded_channel::<Vec<u8>>();
+                        
+                        // Store channel info
+                        self.channels.insert(session_id, ActiveChannel {
+                            session_id,
+                            connection_id,
+                            input_tx,
+                        });
+                        
+                        // Store connection
+                        self.connections.add(connection);
+                        
+                        // Spawn task to handle channel I/O
+                        let event_sender = self.events.sender();
+                        tokio::task::spawn_blocking(move || {
+                            Self::handle_channel_io(channel, session_id, event_sender, input_rx);
+                        });
+                        
+                        // Switch to session view
+                        self.active_session = Some(session_id);
+                        self.view = View::Session;
+                        self.status_message = Some(format!("Connected to {}", host_name));
+                    }
+                    Err(e) => {
+                        self.status_message = Some(format!("Failed to open shell: {}", e));
+                    }
+                }
+            }
+            Err(e) => {
+                self.status_message = Some(format!("Connection failed: {}", e));
             }
         }
+        
+        Ok(())
+    }
 
-        // Escape to connections view
+    /// Handle channel I/O in a blocking context
+    fn handle_channel_io(
+        mut channel: ssh2::Channel,
+        session_id: Uuid,
+        event_sender: mpsc::UnboundedSender<AppEvent>,
+        mut input_rx: mpsc::UnboundedReceiver<Vec<u8>>,
+    ) {
+        use std::io::Write;
+        
+        // Note: ssh2 blocking is controlled at Session level
+        // We'll use short reads with timeout
+        
+        let mut buf = [0u8; 4096];
+        
+        loop {
+            // Check if channel is closed
+            if channel.eof() {
+                let _ = event_sender.send(AppEvent::SshDisconnected {
+                    session_id,
+                    reason: "Channel closed".to_string(),
+                });
+                break;
+            }
+            
+            // Read available data
+            match channel.read(&mut buf) {
+                Ok(0) => {
+                    // No data available, check for input
+                }
+                Ok(n) => {
+                    let data = buf[..n].to_vec();
+                    if event_sender.send(AppEvent::SshData { session_id, data }).is_err() {
+                        break;
+                    }
+                }
+                Err(ref e) if e.kind() == std::io::ErrorKind::WouldBlock => {
+                    // No data available
+                }
+                Err(e) => {
+                    let _ = event_sender.send(AppEvent::SshDisconnected {
+                        session_id,
+                        reason: format!("Read error: {}", e),
+                    });
+                    break;
+                }
+            }
+            
+            // Check for input to send
+            match input_rx.try_recv() {
+                Ok(data) => {
+                    if let Err(e) = channel.write_all(&data) {
+                        let _ = event_sender.send(AppEvent::SshDisconnected {
+                            session_id,
+                            reason: format!("Write error: {}", e),
+                        });
+                        break;
+                    }
+                    let _ = channel.flush();
+                }
+                Err(mpsc::error::TryRecvError::Empty) => {}
+                Err(mpsc::error::TryRecvError::Disconnected) => break,
+            }
+            
+            // Small sleep to prevent busy loop
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        
+        let _ = channel.close();
+    }
+
+    async fn handle_session_key(&mut self, key: crossterm::event::KeyEvent) -> Result<()> {
+        // Check for escape back to connections
         if key.code == KeyCode::Esc && key.modifiers.contains(KeyModifiers::SHIFT) {
             self.view = View::Connections;
+            return Ok(());
+        }
+        
+        // Forward key to SSH session
+        if let Some(session_id) = self.active_session {
+            if let Some(channel) = self.channels.get(&session_id) {
+                let data = self.key_to_bytes(&key);
+                if !data.is_empty() {
+                    let _ = channel.input_tx.send(data);
+                }
+            }
         }
 
         Ok(())

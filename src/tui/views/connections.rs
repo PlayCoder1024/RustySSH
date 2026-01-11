@@ -44,36 +44,26 @@ fn render_host_list_state(frame: &mut Frame, state: &RenderState, area: Rect) {
     let inner = block.inner(area);
     frame.render_widget(block, area);
     
-    // Build list items from config
+    // Build list items from config - track host index
     let mut items: Vec<ListItem> = Vec::new();
+    let mut host_idx: usize = 0;
     
     for group in &state.config.groups {
-        let icon = if group.expanded { "󰅀 " } else { "󰅂 " };
-        let group_line = Line::from(vec![
-            Span::styled(icon, Style::default().fg(theme.accent_secondary())),
-            Span::styled(&group.name, Style::default().add_modifier(Modifier::BOLD).fg(theme.fg_bright())),
-        ]);
-        items.push(ListItem::new(group_line));
-        
         if group.expanded {
             for host in &group.hosts {
-                let line = format_host_line(host, theme);
+                let is_selected = host_idx == state.selected_host_index;
+                let line = format_host_line_with_selection(host, theme, is_selected);
                 items.push(ListItem::new(line));
+                host_idx += 1;
             }
         }
     }
     
-    if !state.config.hosts.is_empty() {
-        let ungrouped_line = Line::from(vec![
-            Span::styled("󰅀 ", Style::default().fg(theme.accent_secondary())),
-            Span::styled("Ungrouped", Style::default().add_modifier(Modifier::BOLD).fg(theme.fg_bright())),
-        ]);
-        items.push(ListItem::new(ungrouped_line));
-        
-        for host in &state.config.hosts {
-            let line = format_host_line(host, theme);
-            items.push(ListItem::new(line));
-        }
+    for host in &state.config.hosts {
+        let is_selected = host_idx == state.selected_host_index;
+        let line = format_host_line_with_selection(host, theme, is_selected);
+        items.push(ListItem::new(line));
+        host_idx += 1;
     }
     
     if items.is_empty() {
@@ -84,20 +74,60 @@ fn render_host_list_state(frame: &mut Frame, state: &RenderState, area: Rect) {
             ]),
             Line::from(""),
             Line::from(vec![
-                Span::styled("  Press ", theme.text_dim()),
-                Span::styled("n", theme.key_hint()),
-                Span::styled(" to add a new host", theme.text_dim()),
+                Span::styled("  Add hosts to ", theme.text_dim()),
+                Span::styled("~/.config/rustyssh/config.yaml", theme.key_hint()),
+            ]),
+            Line::from(""),
+            Line::from(vec![
+                Span::styled("  Example:", theme.text_dim()),
+            ]),
+            Line::from(vec![
+                Span::styled("  hosts:", theme.text_dim()),
+            ]),
+            Line::from(vec![
+                Span::styled("    - name: myserver", theme.text_dim()),
+            ]),
+            Line::from(vec![
+                Span::styled("      hostname: 192.168.1.100", theme.text_dim()),
+            ]),
+            Line::from(vec![
+                Span::styled("      username: user", theme.text_dim()),
             ]),
         ];
         let empty = Paragraph::new(empty_text);
         frame.render_widget(empty, inner);
     } else {
-        let list = List::new(items)
-            .highlight_style(theme.selected())
-            .highlight_symbol("▶ ");
-        
+        let list = List::new(items);
         frame.render_widget(list, inner);
     }
+}
+
+/// Format a single host line with selection state
+fn format_host_line_with_selection(host: &crate::config::HostConfig, theme: &crate::tui::Theme, is_selected: bool) -> Line<'static> {
+    // Status indicator
+    let status_icon = "○ "; // ● for connected
+    
+    // Auth method icon
+    let auth_icon = match &host.auth {
+        crate::config::AuthMethod::Password => "󰌆 ",
+        crate::config::AuthMethod::KeyFile { .. } => "󰌋 ",
+        crate::config::AuthMethod::Agent => "󰌉 ",
+        crate::config::AuthMethod::Certificate { .. } => "󰄤 ",
+    };
+    
+    let (prefix, name_style, conn_style) = if is_selected {
+        ("▶ ", theme.selected(), theme.selected())
+    } else {
+        ("  ", theme.text_bright(), theme.text_dim())
+    };
+    
+    Line::from(vec![
+        Span::styled(prefix, if is_selected { theme.selected() } else { theme.text() }),
+        Span::styled(status_icon, theme.text_dim()),
+        Span::styled(auth_icon, Style::default().fg(theme.accent_info())),
+        Span::styled(host.name.clone(), name_style),
+        Span::styled(format!("  {}", host.connection_string()), conn_style),
+    ])
 }
 
 fn render_details_panel_state(frame: &mut Frame, state: &RenderState, area: Rect) {
