@@ -293,6 +293,12 @@ impl App {
         // Get editor from environment or use default
         let editor = std::env::var("EDITOR").unwrap_or_else(|_| "vi".to_string());
         
+        // Pause event polling to avoid consuming keystrokes
+        self.events.pause();
+        
+        // Small delay to let event loop pause
+        tokio::time::sleep(Duration::from_millis(50)).await;
+        
         // Exit TUI mode completely
         self.tui.exit()?;
         
@@ -313,6 +319,9 @@ impl App {
         
         // Re-enter TUI mode
         self.tui.enter()?;
+        
+        // Resume event polling
+        self.events.resume();
         
         // Clear and redraw
         self.tui.clear()?;

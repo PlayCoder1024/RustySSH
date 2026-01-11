@@ -1,6 +1,8 @@
 //! Application event system
 
 use crossterm::event::{Event as CrosstermEvent, KeyEvent, MouseEvent};
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::Arc;
 use std::time::Duration;
 use tokio::sync::mpsc;
 
@@ -33,6 +35,8 @@ pub struct EventHandler {
     receiver: mpsc::UnboundedReceiver<AppEvent>,
     /// Tick rate for periodic updates
     tick_rate: Duration,
+    /// Pause flag for suspending event polling
+    paused: Arc<AtomicBool>,
 }
 
 impl EventHandler {
@@ -43,6 +47,7 @@ impl EventHandler {
             sender,
             receiver,
             tick_rate,
+            paused: Arc::new(AtomicBool::new(false)),
         }
     }
 
@@ -51,18 +56,40 @@ impl EventHandler {
         self.sender.clone()
     }
 
+    /// Pause event polling (for when launching external programs)
+    pub fn pause(&self) {
+        self.paused.store(true, Ordering::SeqCst);
+    }
+
+    /// Resume event polling
+    pub fn resume(&self) {
+        self.paused.store(false, Ordering::SeqCst);
+    }
+
     /// Start the event loop (spawns background task)
     pub fn start(&self) {
         let sender = self.sender.clone();
         let tick_rate = self.tick_rate;
+        let paused = self.paused.clone();
 
         tokio::spawn(async move {
             let mut interval = tokio::time::interval(tick_rate);
             loop {
+                // Check if paused
+                if paused.load(Ordering::SeqCst) {
+                    tokio::time::sleep(Duration::from_millis(50)).await;
+                    continue;
+                }
+
                 let event = tokio::select! {
                     _ = interval.tick() => AppEvent::Tick,
-                    event = Self::read_crossterm_event() => event,
+                    event = Self::read_crossterm_event(&paused) => event,
                 };
+
+                // Don't send events while paused
+                if paused.load(Ordering::SeqCst) {
+                    continue;
+                }
 
                 if sender.send(event).is_err() {
                     break;
@@ -72,8 +99,14 @@ impl EventHandler {
     }
 
     /// Read next crossterm event
-    async fn read_crossterm_event() -> AppEvent {
+    async fn read_crossterm_event(paused: &Arc<AtomicBool>) -> AppEvent {
         loop {
+            // Check if paused
+            if paused.load(Ordering::SeqCst) {
+                tokio::time::sleep(Duration::from_millis(50)).await;
+                continue;
+            }
+
             if crossterm::event::poll(Duration::from_millis(10)).unwrap_or(false) {
                 match crossterm::event::read() {
                     Ok(CrosstermEvent::Key(key)) => return AppEvent::Key(key),
