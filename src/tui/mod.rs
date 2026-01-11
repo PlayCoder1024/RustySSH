@@ -73,6 +73,12 @@ impl Tui {
     pub fn size(&self) -> Result<Rect> {
         Ok(self.terminal.size()?)
     }
+
+    /// Clear the terminal
+    pub fn clear(&mut self) -> Result<()> {
+        self.terminal.clear()?;
+        Ok(())
+    }
 }
 
 impl Drop for Tui {

@@ -287,16 +287,29 @@ impl App {
         // Get editor from environment or use default
         let editor = std::env::var("EDITOR").unwrap_or_else(|_| "vi".to_string());
         
-        // Exit TUI temporarily
+        // Exit TUI mode completely
         self.tui.exit()?;
         
-        // Open editor
+        // Flush any pending output
+        use std::io::Write;
+        let _ = std::io::stdout().flush();
+        
+        // Open editor with proper stdio inheritance
         let status = std::process::Command::new(&editor)
             .arg(&config_path)
+            .stdin(std::process::Stdio::inherit())
+            .stdout(std::process::Stdio::inherit())
+            .stderr(std::process::Stdio::inherit())
             .status();
         
-        // Re-enter TUI
+        // Small delay to let terminal settle
+        std::thread::sleep(std::time::Duration::from_millis(100));
+        
+        // Re-enter TUI mode
         self.tui.enter()?;
+        
+        // Clear and redraw
+        self.tui.clear()?;
         
         match status {
             Ok(s) if s.success() => {
@@ -310,7 +323,9 @@ impl App {
                 }
             }
             Ok(_) => {
-                self.status_message = Some("Editor exited with error".to_string());
+                // :q exits with success code 0, so this handles other exits
+                self.config = Config::load().await?;
+                self.status_message = Some("Config reloaded".to_string());
             }
             Err(e) => {
                 self.status_message = Some(format!("Failed to open editor: {}", e));
