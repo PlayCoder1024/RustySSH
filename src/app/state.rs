@@ -264,11 +264,105 @@ impl App {
                 }
             }
             KeyCode::Char('n') => {
-                // Add a new host (quick add - prompts for hostname)
+                // Add a new host
                 self.add_quick_host().await?;
+            }
+            KeyCode::Char('e') => {
+                // Edit selected host - open config file
+                self.edit_config().await?;
+            }
+            KeyCode::Char('d') => {
+                // Delete selected host
+                self.delete_selected_host().await?;
             }
             _ => {}
         }
+        Ok(())
+    }
+
+    /// Edit configuration file in external editor
+    async fn edit_config(&mut self) -> Result<()> {
+        let config_path = Config::config_path();
+        
+        // Get editor from environment or use default
+        let editor = std::env::var("EDITOR").unwrap_or_else(|_| "vi".to_string());
+        
+        // Exit TUI temporarily
+        self.tui.exit()?;
+        
+        // Open editor
+        let status = std::process::Command::new(&editor)
+            .arg(&config_path)
+            .status();
+        
+        // Re-enter TUI
+        self.tui.enter()?;
+        
+        match status {
+            Ok(s) if s.success() => {
+                // Reload config
+                self.config = Config::load().await?;
+                self.status_message = Some("Config reloaded".to_string());
+                // Reset selection if out of bounds
+                let host_count = self.all_hosts().len();
+                if self.selected_host_index >= host_count && host_count > 0 {
+                    self.selected_host_index = host_count - 1;
+                }
+            }
+            Ok(_) => {
+                self.status_message = Some("Editor exited with error".to_string());
+            }
+            Err(e) => {
+                self.status_message = Some(format!("Failed to open editor: {}", e));
+            }
+        }
+        
+        Ok(())
+    }
+
+    /// Delete the selected host
+    async fn delete_selected_host(&mut self) -> Result<()> {
+        if self.all_hosts().is_empty() {
+            self.status_message = Some("No host to delete".to_string());
+            return Ok(());
+        }
+        
+        // Find which list the selected host is in
+        let mut idx = 0;
+        
+        // Check group hosts
+        for group in &mut self.config.groups {
+            if group.expanded {
+                for i in 0..group.hosts.len() {
+                    if idx == self.selected_host_index {
+                        let removed = group.hosts.remove(i);
+                        self.config.save().await?;
+                        self.status_message = Some(format!("Deleted host: {}", removed.name));
+                        // Adjust selection
+                        let total = self.all_hosts().len();
+                        if self.selected_host_index >= total && total > 0 {
+                            self.selected_host_index = total - 1;
+                        }
+                        return Ok(());
+                    }
+                    idx += 1;
+                }
+            }
+        }
+        
+        // Check ungrouped hosts
+        let ungrouped_idx = self.selected_host_index - idx;
+        if ungrouped_idx < self.config.hosts.len() {
+            let removed = self.config.hosts.remove(ungrouped_idx);
+            self.config.save().await?;
+            self.status_message = Some(format!("Deleted host: {}", removed.name));
+            // Adjust selection
+            let total = self.all_hosts().len();
+            if self.selected_host_index >= total && total > 0 {
+                self.selected_host_index = total - 1;
+            }
+        }
+        
         Ok(())
     }
 
