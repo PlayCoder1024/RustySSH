@@ -236,7 +236,7 @@ impl App {
             KeyCode::Char('q') => self.state = AppState::Quit,
             KeyCode::Char('?') => self.view = View::Help,
             KeyCode::Char('s') => self.view = View::Settings,
-            KeyCode::Char('k') => self.view = View::Keys,
+            KeyCode::Char('K') => self.view = View::Keys, // Shift+K for Keys view
             KeyCode::Char('t') => self.view = View::Tunnels,
             KeyCode::Char('f') => self.view = View::Sftp,
             KeyCode::Up | KeyCode::Char('k') => {
@@ -263,8 +263,36 @@ impl App {
                     self.connect_to_host(host).await?;
                 }
             }
+            KeyCode::Char('n') => {
+                // Add a new host (quick add - prompts for hostname)
+                self.add_quick_host().await?;
+            }
             _ => {}
         }
+        Ok(())
+    }
+
+    /// Quick add a new host with minimal prompts
+    async fn add_quick_host(&mut self) -> Result<()> {
+        use crate::config::HostConfig;
+        
+        // Create a new host with sensible defaults
+        let username = whoami::username();
+        let host_num = self.config.hosts.len() + 1;
+        let new_host = HostConfig::new(
+            format!("new-host-{}", host_num),
+            "localhost",
+            username,
+        );
+        
+        self.config.hosts.push(new_host.clone());
+        self.config.save().await?;
+        
+        self.status_message = Some(format!("Added host: {} (edit config to customize)", new_host.name));
+        
+        // Select the new host
+        self.selected_host_index = self.all_hosts().len().saturating_sub(1);
+        
         Ok(())
     }
 
