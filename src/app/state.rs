@@ -1,13 +1,13 @@
 //! Application state management
 
-use crate::config::{Config, HostConfig};
-use crate::ssh::{SessionManager, SshConnection, ConnectionPool};
-use crate::tui::{Tui, Theme, Icons};
 use super::{AppEvent, EventHandler};
+use crate::config::{Config, HostConfig};
+use crate::ssh::{ConnectionPool, SessionManager, SshConnection};
+use crate::tui::{Icons, Theme, Tui};
 use anyhow::{anyhow, Result};
 use crossterm::event::{KeyCode, KeyModifiers};
 use std::collections::HashMap;
-use std::io::Read;
+use std::io::{Read, Write};
 use std::time::Duration;
 use tokio::sync::mpsc;
 use uuid::Uuid;
@@ -150,13 +150,18 @@ impl App {
                 theme: self.theme.clone(),
                 icons: self.icons.clone(),
                 config: self.config.clone(),
-                sessions: self.sessions.list().iter().map(|s| SessionInfo {
-                    id: s.id,
-                    name: s.name.clone(),
-                    screen_lines: s.screen_lines(),
-                    cursor_position: s.cursor_position(),
-                    cursor_visible: s.cursor_visible(),
-                }).collect(),
+                sessions: self
+                    .sessions
+                    .list()
+                    .iter()
+                    .map(|s| SessionInfo {
+                        id: s.id,
+                        name: s.name.clone(),
+                        screen_lines: s.screen_lines(),
+                        cursor_position: s.cursor_position(),
+                        cursor_visible: s.cursor_visible(),
+                    })
+                    .collect(),
                 active_session: self.active_session,
                 status_message: self.status_message.clone(),
                 selected_host_index: self.selected_host_index,
@@ -182,13 +187,39 @@ impl App {
     async fn handle_event(&mut self, event: AppEvent) -> Result<()> {
         match event {
             AppEvent::Key(key) => {
-                // Global keybindings
+                // Handle Ctrl+C/Q - only quit from non-session views
+                // In session view, forward Ctrl+C to remote server
                 if key.modifiers.contains(KeyModifiers::CONTROL) {
                     match key.code {
-                        KeyCode::Char('c') | KeyCode::Char('q') => {
+                        KeyCode::Char('c') => {
+                            if self.view == View::Session {
+                                // Forward Ctrl+C (0x03) to remote
+                                if let Some(session_id) = self.active_session {
+                                    if let Some(channel) = self.channels.get(&session_id) {
+                                        let _ = channel.input_tx.send(vec![0x03]);
+                                    }
+                                }
+                            } else {
+                                self.state = AppState::Quit;
+                            }
+                        }
+                        KeyCode::Char('q') => {
+                            // Ctrl+Q always quits (escape hatch from session)
                             self.state = AppState::Quit;
                         }
-                        _ => {}
+                        _ => {
+                            // Forward other Ctrl+key combos to session
+                            if self.view == View::Session {
+                                if let Some(session_id) = self.active_session {
+                                    if let Some(channel) = self.channels.get(&session_id) {
+                                        let data = self.key_to_bytes(&key);
+                                        if !data.is_empty() {
+                                            let _ = channel.input_tx.send(data);
+                                        }
+                                    }
+                                }
+                            }
+                        }
                     }
                 } else {
                     self.handle_key(key).await?;
@@ -237,7 +268,7 @@ impl App {
 
     async fn handle_connections_key(&mut self, key: crossterm::event::KeyEvent) -> Result<()> {
         let host_count = self.all_hosts().len();
-        
+
         match key.code {
             KeyCode::Char('q') => self.state = AppState::Quit,
             KeyCode::Char('?') => self.view = View::Help,
@@ -289,23 +320,28 @@ impl App {
     /// Edit configuration file in external editor
     async fn edit_config(&mut self) -> Result<()> {
         let config_path = Config::config_path();
-        
-        // Get editor from environment or use default
-        let editor = std::env::var("EDITOR").unwrap_or_else(|_| "vi".to_string());
-        
+
+        // Detect available editor
+        let editor = match crate::utils::detect_editor() {
+            Some(ed) => ed,
+            None => {
+                self.status_message = Some("No editor found. Set $EDITOR or install nano/vim/vi.".to_string());
+                return Ok(());
+            }
+        };
+
         // Pause event polling to avoid consuming keystrokes
         self.events.pause();
-        
+
         // Small delay to let event loop pause
         tokio::time::sleep(Duration::from_millis(50)).await;
-        
+
         // Exit TUI mode completely
         self.tui.exit()?;
-        
+
         // Flush any pending output
-        use std::io::Write;
         let _ = std::io::stdout().flush();
-        
+
         // Open editor with proper stdio inheritance
         let status = std::process::Command::new(&editor)
             .arg(&config_path)
@@ -313,19 +349,19 @@ impl App {
             .stdout(std::process::Stdio::inherit())
             .stderr(std::process::Stdio::inherit())
             .status();
-        
+
         // Small delay to let terminal settle
         std::thread::sleep(std::time::Duration::from_millis(100));
-        
+
         // Re-enter TUI mode
         self.tui.enter()?;
-        
+
         // Resume event polling
         self.events.resume();
-        
+
         // Clear and redraw
         self.tui.clear()?;
-        
+
         match status {
             Ok(s) if s.success() => {
                 // Reload config
@@ -346,7 +382,7 @@ impl App {
                 self.status_message = Some(format!("Failed to open editor: {}", e));
             }
         }
-        
+
         Ok(())
     }
 
@@ -356,10 +392,10 @@ impl App {
             self.status_message = Some("No host to delete".to_string());
             return Ok(());
         }
-        
+
         // Find which list the selected host is in
         let mut idx = 0;
-        
+
         // Check group hosts
         for group in &mut self.config.groups {
             if group.expanded {
@@ -379,7 +415,7 @@ impl App {
                 }
             }
         }
-        
+
         // Check ungrouped hosts
         let ungrouped_idx = self.selected_host_index - idx;
         if ungrouped_idx < self.config.hosts.len() {
@@ -392,58 +428,86 @@ impl App {
                 self.selected_host_index = total - 1;
             }
         }
-        
+
         Ok(())
     }
 
     /// Quick add a new host with minimal prompts
     async fn add_quick_host(&mut self) -> Result<()> {
         use crate::config::HostConfig;
-        
+
         // Create a new host with sensible defaults
         let username = whoami::username();
         let host_num = self.config.hosts.len() + 1;
-        let new_host = HostConfig::new(
-            format!("new-host-{}", host_num),
-            "localhost",
-            username,
-        );
-        
+        let new_host = HostConfig::new(format!("new-host-{}", host_num), "localhost", username);
+
         self.config.hosts.push(new_host.clone());
         self.config.save().await?;
-        
-        self.status_message = Some(format!("Added host: {} (edit config to customize)", new_host.name));
-        
+
+        self.status_message = Some(format!(
+            "Added host: {} (edit config to customize)",
+            new_host.name
+        ));
+
         // Select the new host
         self.selected_host_index = self.all_hosts().len().saturating_sub(1);
-        
+
         Ok(())
     }
 
     /// Connect to a host and open a session
     async fn connect_to_host(&mut self, host: HostConfig) -> Result<()> {
         self.status_message = Some(format!("Connecting to {}...", host.name));
-        
+
         // Get terminal size
         let size = self.tui.size()?;
         let cols = size.width as u32;
         let rows = size.height.saturating_sub(2) as u32; // Leave room for status bar
-        
+
         // Clone host name for later use
         let host_name = host.name.clone();
         let host_id = host.id;
-        
+
+        // Check if password auth is needed and prompt user
+        let password = if matches!(host.auth, crate::config::AuthMethod::Password) {
+            // Exit TUI mode to prompt for password
+            self.events.pause();
+            tokio::time::sleep(Duration::from_millis(50)).await;
+            self.tui.exit()?;
+            
+            // Prompt for password
+            print!("Password for {}@{}: ", host.username, host.hostname);
+            let _ = std::io::stdout().flush();
+            
+            let password_result = rpassword::read_password();
+            
+            // Re-enter TUI mode
+            std::thread::sleep(std::time::Duration::from_millis(100));
+            self.tui.enter()?;
+            self.events.resume();
+            self.tui.clear()?;
+            
+            match password_result {
+                Ok(pwd) => Some(pwd),
+                Err(e) => {
+                    self.status_message = Some(format!("Failed to read password: {}", e));
+                    return Ok(());
+                }
+            }
+        } else {
+            None
+        };
+
         // Perform connection in blocking context
         let connection_result = tokio::task::spawn_blocking(move || {
-            // TODO: For password auth, we'd need to prompt the user
-            // For now, try agent auth first
-            SshConnection::connect(host, None, None)
-        }).await?;
-        
+            SshConnection::connect(host, password.as_deref(), None)
+        })
+        .await?;
+
         match connection_result {
             Ok(mut connection) => {
                 let connection_id = connection.id;
-                
+
                 // Open shell channel
                 match connection.open_shell(cols, rows) {
                     Ok(channel) => {
@@ -454,26 +518,29 @@ impl App {
                             size.width,
                             size.height.saturating_sub(2),
                         );
-                        
+
                         // Set up channel I/O
                         let (input_tx, mut input_rx) = mpsc::unbounded_channel::<Vec<u8>>();
-                        
+
                         // Store channel info
-                        self.channels.insert(session_id, ActiveChannel {
+                        self.channels.insert(
                             session_id,
-                            connection_id,
-                            input_tx,
-                        });
-                        
+                            ActiveChannel {
+                                session_id,
+                                connection_id,
+                                input_tx,
+                            },
+                        );
+
                         // Store connection
                         self.connections.add(connection);
-                        
+
                         // Spawn task to handle channel I/O
                         let event_sender = self.events.sender();
                         tokio::task::spawn_blocking(move || {
                             Self::handle_channel_io(channel, session_id, event_sender, input_rx);
                         });
-                        
+
                         // Switch to session view
                         self.active_session = Some(session_id);
                         self.view = View::Session;
@@ -488,7 +555,7 @@ impl App {
                 self.status_message = Some(format!("Connection failed: {}", e));
             }
         }
-        
+
         Ok(())
     }
 
@@ -500,12 +567,12 @@ impl App {
         mut input_rx: mpsc::UnboundedReceiver<Vec<u8>>,
     ) {
         use std::io::Write;
-        
+
         // Note: ssh2 blocking is controlled at Session level
         // We'll use short reads with timeout
-        
+
         let mut buf = [0u8; 4096];
-        
+
         loop {
             // Check if channel is closed
             if channel.eof() {
@@ -515,7 +582,7 @@ impl App {
                 });
                 break;
             }
-            
+
             // Read available data
             match channel.read(&mut buf) {
                 Ok(0) => {
@@ -523,7 +590,10 @@ impl App {
                 }
                 Ok(n) => {
                     let data = buf[..n].to_vec();
-                    if event_sender.send(AppEvent::SshData { session_id, data }).is_err() {
+                    if event_sender
+                        .send(AppEvent::SshData { session_id, data })
+                        .is_err()
+                    {
                         break;
                     }
                 }
@@ -538,7 +608,7 @@ impl App {
                     break;
                 }
             }
-            
+
             // Check for input to send
             match input_rx.try_recv() {
                 Ok(data) => {
@@ -554,11 +624,11 @@ impl App {
                 Err(mpsc::error::TryRecvError::Empty) => {}
                 Err(mpsc::error::TryRecvError::Disconnected) => break,
             }
-            
+
             // Small sleep to prevent busy loop
             std::thread::sleep(Duration::from_millis(10));
         }
-        
+
         let _ = channel.close();
     }
 
@@ -568,7 +638,7 @@ impl App {
             self.view = View::Connections;
             return Ok(());
         }
-        
+
         // Forward key to SSH session
         if let Some(session_id) = self.active_session {
             if let Some(channel) = self.channels.get(&session_id) {
@@ -653,23 +723,21 @@ impl App {
             KeyCode::PageDown => vec![0x1b, b'[', b'6', b'~'],
             KeyCode::Delete => vec![0x1b, b'[', b'3', b'~'],
             KeyCode::Insert => vec![0x1b, b'[', b'2', b'~'],
-            KeyCode::F(n) => {
-                match n {
-                    1 => vec![0x1b, b'O', b'P'],
-                    2 => vec![0x1b, b'O', b'Q'],
-                    3 => vec![0x1b, b'O', b'R'],
-                    4 => vec![0x1b, b'O', b'S'],
-                    5 => vec![0x1b, b'[', b'1', b'5', b'~'],
-                    6 => vec![0x1b, b'[', b'1', b'7', b'~'],
-                    7 => vec![0x1b, b'[', b'1', b'8', b'~'],
-                    8 => vec![0x1b, b'[', b'1', b'9', b'~'],
-                    9 => vec![0x1b, b'[', b'2', b'0', b'~'],
-                    10 => vec![0x1b, b'[', b'2', b'1', b'~'],
-                    11 => vec![0x1b, b'[', b'2', b'3', b'~'],
-                    12 => vec![0x1b, b'[', b'2', b'4', b'~'],
-                    _ => vec![],
-                }
-            }
+            KeyCode::F(n) => match n {
+                1 => vec![0x1b, b'O', b'P'],
+                2 => vec![0x1b, b'O', b'Q'],
+                3 => vec![0x1b, b'O', b'R'],
+                4 => vec![0x1b, b'O', b'S'],
+                5 => vec![0x1b, b'[', b'1', b'5', b'~'],
+                6 => vec![0x1b, b'[', b'1', b'7', b'~'],
+                7 => vec![0x1b, b'[', b'1', b'8', b'~'],
+                8 => vec![0x1b, b'[', b'1', b'9', b'~'],
+                9 => vec![0x1b, b'[', b'2', b'0', b'~'],
+                10 => vec![0x1b, b'[', b'2', b'1', b'~'],
+                11 => vec![0x1b, b'[', b'2', b'3', b'~'],
+                12 => vec![0x1b, b'[', b'2', b'4', b'~'],
+                _ => vec![],
+            },
             _ => vec![],
         }
     }
