@@ -1,8 +1,47 @@
 //! Host configuration structures
 
-use serde::{Deserialize, Serialize};
+use serde::{Deserialize, Deserializer, Serialize, Serializer};
 use std::path::PathBuf;
 use uuid::Uuid;
+
+/// Reference to a jump host - can be UUID, hostname, or connection name
+#[derive(Debug, Clone, PartialEq)]
+pub enum JumpHostRef {
+    /// Reference by UUID
+    ByUuid(Uuid),
+    /// Reference by hostname or IP address
+    ByHostname(String),
+    /// Reference by connection name
+    ByName(String),
+}
+
+impl Serialize for JumpHostRef {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: Serializer,
+    {
+        match self {
+            JumpHostRef::ByUuid(uuid) => serializer.serialize_str(&uuid.to_string()),
+            JumpHostRef::ByHostname(hostname) => serializer.serialize_str(hostname),
+            JumpHostRef::ByName(name) => serializer.serialize_str(name),
+        }
+    }
+}
+
+impl<'de> Deserialize<'de> for JumpHostRef {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        let s = String::deserialize(deserializer)?;
+        // Try parsing as UUID first
+        if let Ok(uuid) = Uuid::parse_str(&s) {
+            return Ok(JumpHostRef::ByUuid(uuid));
+        }
+        // Otherwise treat as string (will be resolved as hostname or name later)
+        Ok(JumpHostRef::ByHostname(s))
+    }
+}
 
 /// SSH host configuration
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -22,8 +61,8 @@ pub struct HostConfig {
     /// Authentication method
     #[serde(default)]
     pub auth: AuthMethod,
-    /// Jump host (ProxyJump) - ID of another host
-    pub jump_host: Option<Uuid>,
+    /// Jump host (ProxyJump) - can be UUID, hostname, or connection name
+    pub jump_host: Option<JumpHostRef>,
     /// Tags for organization
     #[serde(default)]
     pub tags: Vec<String>,

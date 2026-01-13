@@ -90,6 +90,9 @@ impl SshConnection {
         channel.shell()
             .map_err(|e| anyhow!("Failed to request shell: {}", e))?;
 
+        // Set session to non-blocking for async I/O
+        self.session.set_blocking(false);
+
         Ok(channel)
     }
 

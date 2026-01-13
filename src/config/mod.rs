@@ -3,7 +3,7 @@
 mod hosts;
 mod settings;
 
-pub use hosts::{AuthMethod, HostConfig, HostGroup};
+pub use hosts::{AuthMethod, HostConfig, HostGroup, JumpHostRef};
 pub use settings::Settings;
 
 use anyhow::Result;
@@ -95,6 +95,31 @@ impl Config {
     /// Find host by ID
     pub fn find_host(&self, id: uuid::Uuid) -> Option<&HostConfig> {
         self.all_hosts().into_iter().find(|h| h.id == id)
+    }
+
+    /// Resolve a jump host reference to a HostConfig
+    /// Tries to match by UUID first, then by hostname, then by name
+    pub fn resolve_jump_host(&self, reference: &JumpHostRef) -> Option<&HostConfig> {
+        let hosts = self.all_hosts();
+        match reference {
+            JumpHostRef::ByUuid(uuid) => hosts.into_iter().find(|h| &h.id == uuid),
+            JumpHostRef::ByHostname(hostname) => {
+                // First try exact hostname match
+                if let Some(host) = hosts.iter().find(|h| &h.hostname == hostname) {
+                    return Some(host);
+                }
+                // Then try by name (connection name)
+                hosts.into_iter().find(|h| &h.name == hostname)
+            }
+            JumpHostRef::ByName(name) => {
+                // First try by name
+                if let Some(host) = hosts.iter().find(|h| &h.name == name) {
+                    return Some(host);
+                }
+                // Then try by hostname
+                hosts.into_iter().find(|h| &h.hostname == name)
+            }
+        }
     }
 
     /// Add a new host
