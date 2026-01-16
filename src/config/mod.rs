@@ -122,6 +122,39 @@ impl Config {
         }
     }
 
+    /// Resolve the full proxy chain for a host
+    /// Returns hosts in connection order: [jump_host_1, jump_host_2, ..., target]
+    /// Each jump host may itself have a jump host, forming a chain
+    pub fn resolve_proxy_chain(&self, host: &HostConfig) -> Vec<HostConfig> {
+        let mut chain = Vec::new();
+        
+        // Build the chain recursively (collect jump hosts first)
+        let mut jump_hosts = Vec::new();
+        let mut current = host;
+        
+        while let Some(ref jump_ref) = current.jump_host {
+            if let Some(jump_host) = self.resolve_jump_host(jump_ref) {
+                // Check for circular reference
+                if jump_hosts.iter().any(|h: &HostConfig| h.id == jump_host.id) {
+                    break; // Circular reference detected, stop
+                }
+                jump_hosts.push(jump_host.clone());
+                current = jump_host;
+            } else {
+                break; // Jump host not found
+            }
+        }
+        
+        // Reverse to get connection order (outermost jump host first)
+        jump_hosts.reverse();
+        chain.extend(jump_hosts);
+        
+        // Add the target host last
+        chain.push(host.clone());
+        
+        chain
+    }
+
     /// Add a new host
     pub fn add_host(&mut self, host: HostConfig, group_name: Option<&str>) {
         if let Some(name) = group_name {

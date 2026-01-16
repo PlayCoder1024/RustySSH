@@ -6,7 +6,24 @@ use ssh2::Session;
 use std::collections::HashMap;
 use std::io::{Read, Write};
 use std::net::TcpStream;
+
 use uuid::Uuid;
+
+/// Proxy connection type - extensible for future proxy types
+pub enum ProxyConnection {
+    /// Direct connection (no proxy)
+    Direct,
+    /// SSH jump host connection - tunnels through an existing SSH connection
+    JumpHost {
+        /// The SSH connection to tunnel through
+        connection: Box<SshConnection>,
+    },
+    // Future proxy types can be added here:
+    // Socks5 { addr: String, port: u16, auth: Option<(String, String)> },
+    // HttpProxy { addr: String, port: u16, auth: Option<(String, String)> },
+}
+
+
 
 /// Active SSH connection
 pub struct SshConnection {
@@ -16,8 +33,12 @@ pub struct SshConnection {
     pub host: HostConfig,
     /// SSH session
     session: Session,
-    /// TCP stream (kept alive for the session)
-    _stream: TcpStream,
+    /// TCP stream (kept alive for direct connections)
+    _stream: Option<TcpStream>,
+    /// Jump host connection (kept alive for proxied connections)
+    _jump_connection: Option<Box<SshConnection>>,
+    /// Tunnel channel (kept alive for proxied connections)
+    _tunnel_channel: Option<ssh2::Channel>,
     /// Connection status
     pub status: ConnectionStatus,
 }
@@ -31,45 +52,184 @@ pub enum ConnectionStatus {
 }
 
 impl SshConnection {
-    /// Create a new connection to a host
+    /// Create a new direct connection to a host (no proxy)
     pub fn connect(host: HostConfig, password: Option<&str>, passphrase: Option<&str>) -> Result<Self> {
-        // Connect TCP
-        let addr = format!("{}:{}", host.hostname, host.port);
-        let stream = TcpStream::connect(&addr)
-            .map_err(|e| anyhow!("Failed to connect to {}: {}", addr, e))?;
-        
-        // Set non-blocking mode for later async operations
-        stream.set_nonblocking(false)?;
-        
-        // Create SSH session
-        let mut session = Session::new()
-            .map_err(|e| anyhow!("Failed to create SSH session: {}", e))?;
-        
-        session.set_tcp_stream(stream.try_clone()?);
-        
-        // SSH handshake
-        session.handshake()
-            .map_err(|e| anyhow!("SSH handshake failed: {}", e))?;
-        
-        // Authenticate
-        crate::ssh::auth::Authenticator::authenticate_any(
-            &session,
-            &host,
-            password,
-            passphrase,
-        )?;
+        Self::connect_via_proxy(host, ProxyConnection::Direct, password, passphrase)
+    }
 
-        if !session.authenticated() {
-            return Err(anyhow!("Authentication failed"));
+    /// Create a connection through a proxy
+    pub fn connect_via_proxy(
+        host: HostConfig,
+        proxy: ProxyConnection,
+        password: Option<&str>,
+        passphrase: Option<&str>,
+    ) -> Result<Self> {
+        match proxy {
+            ProxyConnection::Direct => {
+                // Direct TCP connection
+                let addr = format!("{}:{}", host.hostname, host.port);
+                let stream = TcpStream::connect(&addr)
+                    .map_err(|e| anyhow!("Failed to connect to {}: {}", addr, e))?;
+                
+                stream.set_nonblocking(false)?;
+                
+                let mut session = Session::new()
+                    .map_err(|e| anyhow!("Failed to create SSH session: {}", e))?;
+                
+                session.set_tcp_stream(stream.try_clone()?);
+                
+                session.handshake()
+                    .map_err(|e| anyhow!("SSH handshake failed: {}", e))?;
+                
+                crate::ssh::auth::Authenticator::authenticate_any(
+                    &session,
+                    &host,
+                    password,
+                    passphrase,
+                )?;
+
+                if !session.authenticated() {
+                    return Err(anyhow!("Authentication failed"));
+                }
+
+                Ok(Self {
+                    id: Uuid::new_v4(),
+                    host,
+                    session,
+                    _stream: Some(stream),
+                    _jump_connection: None,
+                    _tunnel_channel: None,
+                    status: ConnectionStatus::Authenticated,
+                })
+            }
+            ProxyConnection::JumpHost { connection } => {
+                // Connect through jump host using direct-tcpip channel
+                let addr = format!("{}:{}", host.hostname, host.port);
+                
+                // Ensure the jump connection session is in blocking mode for channel setup
+                connection.session.set_blocking(true);
+                
+                // Open a direct-tcpip channel through the jump host
+                let channel = connection.session.channel_direct_tcpip(
+                    &host.hostname,
+                    host.port,
+                    None, // source addr not needed
+                ).map_err(|e| anyhow!("Failed to open tunnel through jump host to {}: {}", addr, e))?;
+                
+                // Set session back to non-blocking mode for the proxy thread
+                // This is critical! Without this, channel.read() will block forever
+                connection.session.set_blocking(false);
+                
+                // Create a new SSH session and use the channel as transport
+                // Note: ssh2 requires a TcpStream, so we use a socket pair approach
+                // Actually, ssh2's Session can use any Read+Write stream via set_tcp_stream
+                // But set_tcp_stream only accepts TcpStream, so we need a workaround
+                //
+                // Workaround: Create a local socket pair and proxy the channel through it
+                let (local_stream, remote_stream) = Self::create_socket_pair()?;
+                
+                // Spawn a thread to proxy between the channel and the socket
+                let channel_clone = channel;
+                std::thread::spawn(move || {
+                    Self::proxy_channel_to_stream(channel_clone, remote_stream);
+                });
+                
+                // Now create SSH session over the local end of the socket pair
+                let mut session = Session::new()
+                    .map_err(|e| anyhow!("Failed to create SSH session: {}", e))?;
+                
+                session.set_tcp_stream(local_stream.try_clone()?);
+                
+                session.handshake()
+                    .map_err(|e| anyhow!("SSH handshake through jump host failed: {}", e))?;
+                
+                crate::ssh::auth::Authenticator::authenticate_any(
+                    &session,
+                    &host,
+                    password,
+                    passphrase,
+                )?;
+
+                if !session.authenticated() {
+                    return Err(anyhow!("Authentication through jump host failed"));
+                }
+
+                Ok(Self {
+                    id: Uuid::new_v4(),
+                    host,
+                    session,
+                    _stream: Some(local_stream),
+                    _jump_connection: Some(connection),
+                    _tunnel_channel: None,
+                    status: ConnectionStatus::Authenticated,
+                })
+            }
         }
+    }
 
-        Ok(Self {
-            id: Uuid::new_v4(),
-            host,
-            session,
-            _stream: stream,
-            status: ConnectionStatus::Authenticated,
-        })
+    /// Create a socket pair for proxying
+    fn create_socket_pair() -> Result<(TcpStream, TcpStream)> {
+        use std::net::TcpListener;
+        
+        // Bind to localhost on a random port
+        let listener = TcpListener::bind("127.0.0.1:0")?;
+        let addr = listener.local_addr()?;
+        
+        // Connect to it
+        let client = TcpStream::connect(addr)?;
+        
+        // Accept the connection
+        let (server, _) = listener.accept()?;
+        
+        Ok((client, server))
+    }
+
+    /// Proxy data between a channel and a stream
+    fn proxy_channel_to_stream(mut channel: ssh2::Channel, mut stream: TcpStream) {
+        use std::io::{ErrorKind, Read, Write};
+        
+        // Set stream to non-blocking
+        let _ = stream.set_nonblocking(true);
+        
+        let mut buf = [0u8; 8192];
+        
+        loop {
+            // Check if channel is closed
+            if channel.eof() {
+                break;
+            }
+
+            // Read from channel, write to stream
+            match channel.read(&mut buf) {
+                Ok(0) => {}
+                Ok(n) => {
+                    if stream.write_all(&buf[..n]).is_err() {
+                        break;
+                    }
+                    let _ = stream.flush();
+                }
+                Err(ref e) if e.kind() == ErrorKind::WouldBlock => {}
+                Err(_) => break,
+            }
+
+            // Read from stream, write to channel
+            match stream.read(&mut buf) {
+                Ok(0) => break, // Stream closed
+                Ok(n) => {
+                    if channel.write_all(&buf[..n]).is_err() {
+                        break;
+                    }
+                    let _ = channel.flush();
+                }
+                Err(ref e) if e.kind() == ErrorKind::WouldBlock => {}
+                Err(_) => break,
+            }
+
+            // Small sleep to avoid busy-looping
+            std::thread::sleep(std::time::Duration::from_micros(100));
+        }
+        
+        let _ = channel.close();
     }
 
     /// Get a reference to the SSH session

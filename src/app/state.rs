@@ -2,7 +2,7 @@
 
 use super::{AppEvent, EventHandler};
 use crate::config::{Config, HostConfig};
-use crate::ssh::{ConnectionPool, SessionManager, SshConnection};
+use crate::ssh::{ConnectionPool, SessionManager, SshConnection, ProxyConnection};
 use crate::tui::{Icons, Theme, Tui};
 use anyhow::{anyhow, Result};
 use crossterm::event::{KeyCode, KeyModifiers};
@@ -456,6 +456,7 @@ impl App {
     }
 
     /// Connect to a host and open a session
+    /// Handles proxy chains (jump hosts) with recursive password prompts
     async fn connect_to_host(&mut self, host: HostConfig) -> Result<()> {
         self.status_message = Some(format!("Connecting to {}...", host.name));
 
@@ -468,39 +469,92 @@ impl App {
         let host_name = host.name.clone();
         let host_id = host.id;
 
-        // Check if password auth is needed and prompt user
-        let password = if matches!(host.auth, crate::config::AuthMethod::Password) {
-            // Exit TUI mode to prompt for password
+        // Resolve the full proxy chain
+        let proxy_chain = self.config.resolve_proxy_chain(&host);
+        
+        // Collect passwords for all hosts in the chain that need password auth
+        let mut passwords: std::collections::HashMap<uuid::Uuid, String> = std::collections::HashMap::new();
+        
+        // Check if any host in the chain needs password auth
+        let hosts_needing_password: Vec<_> = proxy_chain
+            .iter()
+            .filter(|h| matches!(h.auth, crate::config::AuthMethod::Password))
+            .collect();
+        
+        if !hosts_needing_password.is_empty() {
+            // Exit TUI mode to prompt for passwords
             self.events.pause();
             tokio::time::sleep(Duration::from_millis(50)).await;
             self.tui.exit()?;
             
-            // Prompt for password
-            print!("Password for {}@{}: ", host.username, host.hostname);
-            let _ = std::io::stdout().flush();
+            println!(); // Newline for cleaner output
             
-            let password_result = rpassword::read_password();
+            for host_config in &hosts_needing_password {
+                // Show context for proxy chain
+                let context = if host_config.id == host.id {
+                    "target".to_string()
+                } else {
+                    "jump host".to_string()
+                };
+                
+                print!("Password for {}@{} ({}): ", host_config.username, host_config.hostname, context);
+                let _ = std::io::stdout().flush();
+                
+                match rpassword::read_password() {
+                    Ok(pwd) => {
+                        passwords.insert(host_config.id, pwd);
+                    }
+                    Err(e) => {
+                        // Re-enter TUI mode before returning error
+                        std::thread::sleep(std::time::Duration::from_millis(100));
+                        self.tui.enter()?;
+                        self.events.resume();
+                        self.tui.clear()?;
+                        self.status_message = Some(format!("Failed to read password: {}", e));
+                        return Ok(());
+                    }
+                }
+            }
             
             // Re-enter TUI mode
             std::thread::sleep(std::time::Duration::from_millis(100));
             self.tui.enter()?;
             self.events.resume();
             self.tui.clear()?;
-            
-            match password_result {
-                Ok(pwd) => Some(pwd),
-                Err(e) => {
-                    self.status_message = Some(format!("Failed to read password: {}", e));
-                    return Ok(());
-                }
-            }
-        } else {
-            None
-        };
+        }
 
         // Perform connection in blocking context
         let connection_result = tokio::task::spawn_blocking(move || {
-            SshConnection::connect(host, password.as_deref(), None)
+            // Connect through the proxy chain
+            let mut prev_connection: Option<SshConnection> = None;
+            
+            for (i, chain_host) in proxy_chain.iter().enumerate() {
+                let is_last = i == proxy_chain.len() - 1;
+                let password = passwords.get(&chain_host.id).map(|s| s.as_str());
+                
+                let proxy = if let Some(conn) = prev_connection.take() {
+                    ProxyConnection::JumpHost {
+                        connection: Box::new(conn),
+                    }
+                } else {
+                    ProxyConnection::Direct
+                };
+                
+                let connection = SshConnection::connect_via_proxy(
+                    chain_host.clone(),
+                    proxy,
+                    password,
+                    None, // passphrase
+                )?;
+                
+                if is_last {
+                    return Ok(connection);
+                } else {
+                    prev_connection = Some(connection);
+                }
+            }
+            
+            Err(anyhow::anyhow!("Empty proxy chain"))
         })
         .await?;
 
@@ -520,7 +574,7 @@ impl App {
                         );
 
                         // Set up channel I/O
-                        let (input_tx, mut input_rx) = mpsc::unbounded_channel::<Vec<u8>>();
+                        let (input_tx, input_rx) = mpsc::unbounded_channel::<Vec<u8>>();
 
                         // Store channel info
                         self.channels.insert(
