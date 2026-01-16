@@ -227,8 +227,11 @@ impl App {
             }
             AppEvent::Resize(w, h) => {
                 // Handle terminal resize
+                // Account for: status bar (2), tab bar (2), terminal block borders (2 rows, 2 cols)
                 if let Some(session_id) = self.active_session {
-                    self.sessions.resize_session(session_id, w, h).await?;
+                    let adjusted_cols = w.saturating_sub(2);
+                    let adjusted_rows = h.saturating_sub(6);
+                    self.sessions.resize_session(session_id, adjusted_cols, adjusted_rows).await?;
                 }
             }
             AppEvent::SshData { session_id, data } => {
@@ -461,9 +464,10 @@ impl App {
         self.status_message = Some(format!("Connecting to {}...", host.name));
 
         // Get terminal size
+        // Account for: status bar (2 lines), tab bar (2 lines), terminal block borders (2 lines top+bottom, 2 cols left+right)
         let size = self.tui.size()?;
-        let cols = size.width as u32;
-        let rows = size.height.saturating_sub(2) as u32; // Leave room for status bar
+        let cols = size.width.saturating_sub(2) as u32; // Subtract block borders (left + right)
+        let rows = size.height.saturating_sub(6) as u32; // Subtract: status bar (2) + tab bar (2) + block borders (2)
 
         // Clone host name for later use
         let host_name = host.name.clone();
@@ -565,12 +569,12 @@ impl App {
                 // Open shell channel
                 match connection.open_shell(cols, rows) {
                     Ok(channel) => {
-                        // Create session for terminal emulation
+                        // Create session for terminal emulation (use same size as PTY)
                         let session_id = self.sessions.create_session(
                             host_id,
                             host_name.clone(),
-                            size.width,
-                            size.height.saturating_sub(2),
+                            cols as u16,
+                            rows as u16,
                         );
 
                         // Set up channel I/O
