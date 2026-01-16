@@ -47,7 +47,7 @@ impl Session {
             id: Uuid::new_v4(),
             host_id,
             name,
-            vt: Parser::new(rows, cols, 0),
+            vt: Parser::new(rows, cols, 1000), // 1000 lines of scrollback
             scrollback: VecDeque::new(),
             scrollback_limit: 10000,
             scroll_offset: 0,
@@ -60,6 +60,9 @@ impl Session {
 
     /// Process received data through VT100 parser
     pub fn process_data(&mut self, data: &[u8]) {
+        // Auto-scroll to bottom when new data arrives
+        self.vt.set_scrollback(0);
+        self.scroll_offset = 0;
         // Process through VT100
         self.vt.process(data);
     }
@@ -70,6 +73,7 @@ impl Session {
     }
 
     /// Get screen content as strings
+    /// When scrolled up, vt100 automatically shows scrollback content via cell()
     pub fn screen_lines(&self) -> Vec<String> {
         let screen = self.vt.screen();
         let mut lines = Vec::new();
@@ -83,9 +87,7 @@ impl Session {
                     line.push(' ');
                 }
             }
-            // Trim trailing whitespace
-            let trimmed = line.trim_end();
-            lines.push(trimmed.to_string());
+            lines.push(line.trim_end().to_string());
         }
         
         lines
@@ -98,19 +100,25 @@ impl Session {
         self.vt.set_size(rows, cols);
     }
 
-    /// Scroll up
+    /// Scroll up (view older content)
     pub fn scroll_up(&mut self, lines: usize) {
-        let max_scroll = self.scrollback.len();
-        self.scroll_offset = (self.scroll_offset + lines).min(max_scroll);
+        // vt100's scrollback() returns current scroll position
+        // Use set_scrollback() to scroll into history
+        let current = self.vt.screen().scrollback();
+        self.vt.set_scrollback(current + lines);
+        self.scroll_offset = self.vt.screen().scrollback();
     }
 
-    /// Scroll down
+    /// Scroll down (view newer content)
     pub fn scroll_down(&mut self, lines: usize) {
-        self.scroll_offset = self.scroll_offset.saturating_sub(lines);
+        let current = self.vt.screen().scrollback();
+        self.vt.set_scrollback(current.saturating_sub(lines));
+        self.scroll_offset = self.vt.screen().scrollback();
     }
 
     /// Scroll to bottom
     pub fn scroll_to_bottom(&mut self) {
+        self.vt.set_scrollback(0);
         self.scroll_offset = 0;
     }
 

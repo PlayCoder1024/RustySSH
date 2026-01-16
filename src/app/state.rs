@@ -5,7 +5,7 @@ use crate::config::{Config, HostConfig};
 use crate::ssh::{ConnectionPool, SessionManager, SshConnection, ProxyConnection};
 use crate::tui::{Icons, Theme, Tui};
 use anyhow::{anyhow, Result};
-use crossterm::event::{KeyCode, KeyModifiers};
+use crossterm::event::{KeyCode, KeyModifiers, MouseEvent, MouseEventKind};
 use std::collections::HashMap;
 use std::io::{Read, Write};
 use std::time::Duration;
@@ -249,7 +249,12 @@ impl App {
             AppEvent::Error(msg) => {
                 self.status_message = Some(format!("Error: {}", msg));
             }
-            _ => {}
+            AppEvent::Mouse(mouse) => {
+                self.handle_mouse(mouse).await?;
+            }
+            AppEvent::Tick | AppEvent::SftpProgress { .. } => {
+                // Tick and SFTP events are handled elsewhere or ignored
+            }
         }
         Ok(())
     }
@@ -265,6 +270,55 @@ impl App {
             View::Keys => self.handle_keys_key(key).await?,
             View::Settings => self.handle_settings_key(key).await?,
             View::Help => self.handle_help_key(key).await?,
+        }
+        Ok(())
+    }
+
+    /// Handle mouse events for scrolling
+    async fn handle_mouse(&mut self, mouse: MouseEvent) -> Result<()> {
+        use MouseEventKind::*;
+        
+        match mouse.kind {
+            ScrollUp => {
+                match self.view {
+                    View::Connections => {
+                        // Scroll up in host list (move selection up)
+                        if self.selected_host_index > 0 {
+                            self.selected_host_index -= 1;
+                        }
+                    }
+                    View::Session => {
+                        // Scroll up in terminal history
+                        if let Some(session_id) = self.active_session {
+                            if let Some(session) = self.sessions.get_mut(session_id) {
+                                session.scroll_up(3);
+                            }
+                        }
+                    }
+                    _ => {}
+                }
+            }
+            ScrollDown => {
+                match self.view {
+                    View::Connections => {
+                        // Scroll down in host list (move selection down)
+                        let host_count = self.all_hosts().len();
+                        if self.selected_host_index + 1 < host_count {
+                            self.selected_host_index += 1;
+                        }
+                    }
+                    View::Session => {
+                        // Scroll down in terminal history (towards present)
+                        if let Some(session_id) = self.active_session {
+                            if let Some(session) = self.sessions.get_mut(session_id) {
+                                session.scroll_down(3);
+                            }
+                        }
+                    }
+                    _ => {}
+                }
+            }
+            _ => {}
         }
         Ok(())
     }
