@@ -2,6 +2,7 @@
 
 use super::{AppEvent, EventHandler};
 use crate::config::{Config, HostConfig};
+use crate::credentials::CredentialManager;
 use crate::ssh::{ConnectionPool, SessionManager, SshConnection, ProxyConnection};
 use crate::tui::{Icons, Theme, Tui};
 use anyhow::{anyhow, Result};
@@ -93,6 +94,8 @@ pub struct App {
     pub theme: Theme,
     /// Icons (Nerd Font or ASCII)
     pub icons: Icons,
+    /// Credential manager for secure password storage
+    pub credentials: CredentialManager,
 }
 
 impl App {
@@ -103,6 +106,7 @@ impl App {
         let icons = Icons::detect();
         let tui = Tui::new()?;
         let events = EventHandler::new(Duration::from_millis(50));
+        let credentials = CredentialManager::new().await?;
 
         Ok(Self {
             view: View::default(),
@@ -118,6 +122,7 @@ impl App {
             events,
             theme,
             icons,
+            credentials,
         })
     }
 
@@ -514,6 +519,7 @@ impl App {
 
     /// Connect to a host and open a session
     /// Handles proxy chains (jump hosts) with recursive password prompts
+    /// Integrates with credential manager for saved passwords
     async fn connect_to_host(&mut self, host: HostConfig) -> Result<()> {
         self.status_message = Some(format!("Connecting to {}...", host.name));
 
@@ -532,6 +538,7 @@ impl App {
         
         // Collect passwords for all hosts in the chain that need password auth
         let mut passwords: std::collections::HashMap<uuid::Uuid, String> = std::collections::HashMap::new();
+        let mut hosts_to_save: Vec<uuid::Uuid> = Vec::new();
         
         // Check if any host in the chain needs password auth
         let hosts_needing_password: Vec<_> = proxy_chain
@@ -540,45 +547,189 @@ impl App {
             .collect();
         
         if !hosts_needing_password.is_empty() {
-            // Exit TUI mode to prompt for passwords
-            self.events.pause();
-            tokio::time::sleep(Duration::from_millis(50)).await;
-            self.tui.exit()?;
+            // Check if any host wants to remember password (for saving) or has saved password (for retrieval)
+            let any_wants_remember = hosts_needing_password.iter()
+                .any(|h| h.remember_password);
+            let has_any_saved = hosts_needing_password.iter()
+                .any(|h| h.remember_password && self.credentials.has_saved_password(h.id));
             
-            println!(); // Newline for cleaner output
-            
-            for host_config in &hosts_needing_password {
-                // Show context for proxy chain
-                let context = if host_config.id == host.id {
-                    "target".to_string()
-                } else {
-                    "jump host".to_string()
-                };
-                
-                print!("Password for {}@{} ({}): ", host_config.username, host_config.hostname, context);
-                let _ = std::io::stdout().flush();
-                
-                match rpassword::read_password() {
-                    Ok(pwd) => {
-                        passwords.insert(host_config.id, pwd);
-                    }
-                    Err(e) => {
-                        // Re-enter TUI mode before returning error
+            // Need to setup/unlock master password if:
+            // - Any host wants to remember password (for future saving), OR
+            // - Any host has a saved password (for retrieval)
+            if (any_wants_remember || has_any_saved) && !self.credentials.is_unlocked() {
+                // Need to unlock master password first
+                if !self.credentials.has_master_password() {
+                    // First time setup - prompt to create master password
+                    self.events.pause();
+                    tokio::time::sleep(Duration::from_millis(50)).await;
+                    self.tui.exit()?;
+                    
+                    println!("\n🔐 First time setup: Create a master password to secure your saved credentials.");
+                    println!("   This password encrypts all saved connection passwords.\n");
+                    
+                    print!("Create master password: ");
+                    let _ = std::io::stdout().flush();
+                    let master_pwd = match rpassword::read_password() {
+                        Ok(p) => p,
+                        Err(e) => {
+                            std::thread::sleep(std::time::Duration::from_millis(100));
+                            self.tui.enter()?;
+                            self.events.resume();
+                            self.tui.clear()?;
+                            self.status_message = Some(format!("Failed to read password: {}", e));
+                            return Ok(());
+                        }
+                    };
+                    
+                    print!("Confirm master password: ");
+                    let _ = std::io::stdout().flush();
+                    let confirm_pwd = match rpassword::read_password() {
+                        Ok(p) => p,
+                        Err(e) => {
+                            std::thread::sleep(std::time::Duration::from_millis(100));
+                            self.tui.enter()?;
+                            self.events.resume();
+                            self.tui.clear()?;
+                            self.status_message = Some(format!("Failed to read password: {}", e));
+                            return Ok(());
+                        }
+                    };
+                    
+                    if master_pwd != confirm_pwd {
                         std::thread::sleep(std::time::Duration::from_millis(100));
                         self.tui.enter()?;
                         self.events.resume();
                         self.tui.clear()?;
-                        self.status_message = Some(format!("Failed to read password: {}", e));
+                        self.status_message = Some("Passwords don't match. Try again.".to_string());
                         return Ok(());
                     }
+                    
+                    if let Err(e) = self.credentials.setup_master_password(&master_pwd) {
+                        std::thread::sleep(std::time::Duration::from_millis(100));
+                        self.tui.enter()?;
+                        self.events.resume();
+                        self.tui.clear()?;
+                        self.status_message = Some(format!("Failed to setup master password: {}", e));
+                        return Ok(());
+                    }
+                    
+                    println!("\n✅ Master password created successfully!\n");
+                    std::thread::sleep(std::time::Duration::from_millis(500));
+                    self.tui.enter()?;
+                    self.events.resume();
+                    self.tui.clear()?;
+                } else {
+                    // Prompt for existing master password
+                    self.events.pause();
+                    tokio::time::sleep(Duration::from_millis(50)).await;
+                    self.tui.exit()?;
+                    
+                    print!("\n🔐 Master password: ");
+                    let _ = std::io::stdout().flush();
+                    let master_pwd = match rpassword::read_password() {
+                        Ok(p) => p,
+                        Err(e) => {
+                            std::thread::sleep(std::time::Duration::from_millis(100));
+                            self.tui.enter()?;
+                            self.events.resume();
+                            self.tui.clear()?;
+                            self.status_message = Some(format!("Failed to read password: {}", e));
+                            return Ok(());
+                        }
+                    };
+                    
+                    match self.credentials.unlock(&master_pwd) {
+                        Ok(true) => {
+                            println!("✅ Unlocked\n");
+                            std::thread::sleep(std::time::Duration::from_millis(200));
+                        }
+                        Ok(false) => {
+                            std::thread::sleep(std::time::Duration::from_millis(100));
+                            self.tui.enter()?;
+                            self.events.resume();
+                            self.tui.clear()?;
+                            self.status_message = Some("Incorrect master password".to_string());
+                            return Ok(());
+                        }
+                        Err(e) => {
+                            std::thread::sleep(std::time::Duration::from_millis(100));
+                            self.tui.enter()?;
+                            self.events.resume();
+                            self.tui.clear()?;
+                            self.status_message = Some(format!("Failed to unlock: {}", e));
+                            return Ok(());
+                        }
+                    }
+                    
+                    self.tui.enter()?;
+                    self.events.resume();
+                    self.tui.clear()?;
                 }
             }
             
-            // Re-enter TUI mode
-            std::thread::sleep(std::time::Duration::from_millis(100));
-            self.tui.enter()?;
-            self.events.resume();
-            self.tui.clear()?;
+            // Now collect passwords - try saved passwords first
+            let mut need_prompt = false;
+            for host_config in &hosts_needing_password {
+                // Try saved password first if remember_password is enabled
+                if host_config.remember_password && self.credentials.is_unlocked() {
+                    if let Ok(Some(saved_pwd)) = self.credentials.get_password(host_config.id) {
+                        passwords.insert(host_config.id, saved_pwd);
+                        continue;
+                    }
+                }
+                need_prompt = true;
+            }
+            
+            if need_prompt {
+                // Exit TUI mode to prompt for passwords
+                self.events.pause();
+                tokio::time::sleep(Duration::from_millis(50)).await;
+                self.tui.exit()?;
+                
+                println!(); // Newline for cleaner output
+                
+                for host_config in &hosts_needing_password {
+                    // Skip if we already have a saved password
+                    if passwords.contains_key(&host_config.id) {
+                        continue;
+                    }
+                    
+                    // Show context for proxy chain
+                    let context = if host_config.id == host.id {
+                        "target".to_string()
+                    } else {
+                        "jump host".to_string()
+                    };
+                    
+                    print!("Password for {}@{} ({}): ", host_config.username, host_config.hostname, context);
+                    let _ = std::io::stdout().flush();
+                    
+                    match rpassword::read_password() {
+                        Ok(pwd) => {
+                            passwords.insert(host_config.id, pwd);
+                            // Mark for potential save if remember_password is enabled
+                            if host_config.remember_password {
+                                hosts_to_save.push(host_config.id);
+                            }
+                        }
+                        Err(e) => {
+                            // Re-enter TUI mode before returning error
+                            std::thread::sleep(std::time::Duration::from_millis(100));
+                            self.tui.enter()?;
+                            self.events.resume();
+                            self.tui.clear()?;
+                            self.status_message = Some(format!("Failed to read password: {}", e));
+                            return Ok(());
+                        }
+                    }
+                }
+                
+                // Re-enter TUI mode
+                std::thread::sleep(std::time::Duration::from_millis(100));
+                self.tui.enter()?;
+                self.events.resume();
+                self.tui.clear()?;
+            }
         }
 
         // Perform connection in blocking context
@@ -606,7 +757,7 @@ impl App {
                 )?;
                 
                 if is_last {
-                    return Ok(connection);
+                    return Ok((connection, passwords));
                 } else {
                     prev_connection = Some(connection);
                 }
@@ -617,8 +768,21 @@ impl App {
         .await?;
 
         match connection_result {
-            Ok(mut connection) => {
+            Ok((mut connection, passwords_used)) => {
                 let connection_id = connection.id;
+
+                // Save passwords for hosts that were newly entered (not from vault) and have remember_password
+                for host_to_save_id in &hosts_to_save {
+                    if let Some(pwd) = passwords_used.get(host_to_save_id) {
+                        // Ensure master password is unlocked (should already be)
+                        if self.credentials.is_unlocked() {
+                            if let Err(e) = self.credentials.save_password(*host_to_save_id, pwd).await {
+                                // Log but don't fail connection
+                                tracing::warn!("Failed to save password: {}", e);
+                            }
+                        }
+                    }
+                }
 
                 // Open shell channel
                 match connection.open_shell(cols, rows) {
@@ -664,6 +828,14 @@ impl App {
                 }
             }
             Err(e) => {
+                // Connection failed - if we used saved passwords, clear them
+                for host_to_save_id in &hosts_to_save {
+                    if self.credentials.has_saved_password(*host_to_save_id) {
+                        if let Err(del_err) = self.credentials.delete_password(*host_to_save_id).await {
+                            tracing::warn!("Failed to delete invalid password: {}", del_err);
+                        }
+                    }
+                }
                 self.status_message = Some(format!("Connection failed: {}", e));
             }
         }

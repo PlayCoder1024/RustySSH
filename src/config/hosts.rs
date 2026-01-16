@@ -80,6 +80,9 @@ pub struct HostConfig {
     pub notes: String,
     /// Color for visual identification (hex)
     pub color: Option<String>,
+    /// Remember password for this connection (encrypted with master password)
+    #[serde(default)]
+    pub remember_password: bool,
 }
 
 fn default_port() -> u16 {
@@ -102,6 +105,7 @@ impl Default for HostConfig {
             environment: std::collections::HashMap::new(),
             notes: String::new(),
             color: None,
+            remember_password: false,
         }
     }
 }

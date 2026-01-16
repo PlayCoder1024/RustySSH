@@ -47,6 +47,15 @@ once_cell = "1"
 whoami = "1"
 rpassword = "7"
 
+# Security / Encryption
+argon2 = "0.5"           # Password hashing (Argon2id)
+aes-gcm = "0.10"         # AES-256-GCM encryption
+rand = "0.8"             # Cryptographic random
+keyring = "2"            # Cross-platform secure storage
+zeroize = { version = "1", features = ["derive"] }  # Secure memory wiping
+base64 = "0.21"          # Encoding for storage
+serde_json = "1.0.149"
+
 [dev-dependencies]
 tempfile = "3"
 tokio-test = "0.4"
