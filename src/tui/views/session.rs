@@ -73,14 +73,17 @@ pub fn render_state(frame: &mut Frame, state: &RenderState, area: Rect) {
     // Get active session content
     if let Some(session_id) = state.active_session {
         if let Some(session) = state.sessions.iter().find(|s| s.id == session_id) {
+            use crate::tui::highlight::highlight_line;
+            let highlight_config = &state.config.settings.ui.terminal_highlight;
+            
             let lines: Vec<Line> = session
                 .screen_lines
                 .iter()
                 .take(inner.height as usize)
-                .map(|line| Line::from(line.as_str()))
+                .map(|line| highlight_line(line, theme, highlight_config))
                 .collect();
 
-            let paragraph = Paragraph::new(lines).style(theme.text());
+            let paragraph = Paragraph::new(lines);
             frame.render_widget(paragraph, inner);
 
             if session.cursor_visible {
@@ -203,15 +206,18 @@ fn render_terminal(frame: &mut Frame, app: &App, area: Rect) {
     // Get active session content
     if let Some(session_id) = app.active_session {
         if let Some(session) = app.sessions.get(session_id) {
-            // Render VT100 screen content
+            use crate::tui::highlight::highlight_line;
+            let highlight_config = &app.config.settings.ui.terminal_highlight;
+            
+            // Render VT100 screen content with keyword highlighting
             let screen_lines = session.screen_lines();
             let lines: Vec<Line> = screen_lines
                 .iter()
                 .take(inner.height as usize)
-                .map(|line| Line::from(line.as_str()))
+                .map(|line| highlight_line(line, theme, highlight_config))
                 .collect();
 
-            let paragraph = Paragraph::new(lines).style(theme.text());
+            let paragraph = Paragraph::new(lines);
 
             frame.render_widget(paragraph, inner);
 

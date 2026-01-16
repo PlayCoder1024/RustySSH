@@ -1,5 +1,6 @@
 //! Application settings
 
+use crate::tui::TerminalHighlightConfig;
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 
@@ -45,6 +46,9 @@ pub struct UiSettings {
     /// Unicode graph symbols (braille, block, ascii)
     #[serde(default = "default_graph_style")]
     pub graph_style: String,
+    /// Terminal keyword highlighting configuration
+    #[serde(default)]
+    pub terminal_highlight: TerminalHighlightConfig,
 }
 
 fn default_theme() -> String {
@@ -71,6 +75,7 @@ impl Default for UiSettings {
             show_status_bar: true,
             scrollback_lines: default_scrollback(),
             graph_style: default_graph_style(),
+            terminal_highlight: TerminalHighlightConfig::default(),
         }
     }
 }
