@@ -5,6 +5,7 @@ use crate::config::{Config, HostConfig};
 use crate::credentials::CredentialManager;
 use crate::ssh::{ConnectionPool, SessionManager, SshConnection, ProxyConnection};
 use crate::tui::{Icons, Theme, Tui};
+use crate::tui::terminal_render::render_screen_to_lines;
 use anyhow::{anyhow, Result};
 use crossterm::event::{KeyCode, KeyModifiers, MouseEvent, MouseEventKind};
 use std::collections::HashMap;
@@ -39,7 +40,8 @@ pub enum AppState {
 pub struct SessionInfo {
     pub id: Uuid,
     pub name: String,
-    pub screen_lines: Vec<String>,
+    /// Styled terminal lines with full color support
+    pub styled_lines: Vec<ratatui::text::Line<'static>>,
     pub cursor_position: (u16, u16),
     pub cursor_visible: bool,
 }
@@ -162,7 +164,7 @@ impl App {
                     .map(|s| SessionInfo {
                         id: s.id,
                         name: s.name.clone(),
-                        screen_lines: s.screen_lines(),
+                        styled_lines: render_screen_to_lines(s.screen()),
                         cursor_position: s.cursor_position(),
                         cursor_visible: s.cursor_visible(),
                     })

@@ -70,17 +70,15 @@ pub fn render_state(frame: &mut Frame, state: &RenderState, area: Rect) {
     let inner = block.inner(chunks[1]);
     frame.render_widget(block, chunks[1]);
 
-    // Get active session content
+    // Get active session content with native terminal colors
     if let Some(session_id) = state.active_session {
         if let Some(session) = state.sessions.iter().find(|s| s.id == session_id) {
-            use crate::tui::highlight::highlight_line;
-            let highlight_config = &state.config.settings.ui.terminal_highlight;
-            
+            // Use pre-rendered styled lines with full ANSI color support
             let lines: Vec<Line> = session
-                .screen_lines
+                .styled_lines
                 .iter()
                 .take(inner.height as usize)
-                .map(|line| highlight_line(line, theme, highlight_config))
+                .cloned()
                 .collect();
 
             let paragraph = Paragraph::new(lines);
@@ -203,18 +201,24 @@ fn render_terminal(frame: &mut Frame, app: &App, area: Rect) {
     let inner = block.inner(area);
     frame.render_widget(block, area);
 
-    // Get active session content
+    // Get active session content with native ANSI colors
     if let Some(session_id) = app.active_session {
         if let Some(session) = app.sessions.get(session_id) {
-            use crate::tui::highlight::highlight_line;
-            let highlight_config = &app.config.settings.ui.terminal_highlight;
+            use crate::tui::terminal_render::render_screen_to_lines;
+            use crate::tui::highlight::{highlight_styled_line, TerminalHighlightConfig};
             
-            // Render VT100 screen content with keyword highlighting
-            let screen_lines = session.screen_lines();
-            let lines: Vec<Line> = screen_lines
-                .iter()
+            // Render VT100 screen with full color support
+            let screen = session.screen();
+            let styled_lines = render_screen_to_lines(screen);
+            
+            // Get highlight config (use default for now, can be made configurable)
+            let highlight_config = TerminalHighlightConfig::default();
+            
+            // Apply keyword highlighting on top of VT100 colors
+            let lines: Vec<Line> = styled_lines
+                .into_iter()
                 .take(inner.height as usize)
-                .map(|line| highlight_line(line, theme, highlight_config))
+                .map(|line| highlight_styled_line(line, &highlight_config))
                 .collect();
 
             let paragraph = Paragraph::new(lines);

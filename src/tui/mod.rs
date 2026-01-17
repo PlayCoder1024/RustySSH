@@ -3,6 +3,7 @@
 mod theme;
 mod icons;
 pub mod highlight;
+pub mod terminal_render;
 pub mod ui;
 pub mod views;
 pub mod widgets;

@@ -279,3 +279,123 @@ fn find_keyword_matches(
         }
     }
 }
+
+/// Highlight keywords in an already-styled Line while preserving existing ANSI/VT100 colors
+/// 
+/// This function takes a Line that already has styling from VT100 parsing (shell prompts,
+/// directory colors, etc.) and applies keyword highlighting on top without destroying
+/// the existing styles.
+pub fn highlight_styled_line(line: Line<'static>, config: &TerminalHighlightConfig) -> Line<'static> {
+    if !config.enabled {
+        return line;
+    }
+
+    // Extract full text content from line for keyword matching
+    let full_text: String = line.spans.iter().map(|s| s.content.as_ref()).collect();
+    
+    if full_text.is_empty() {
+        return line;
+    }
+
+    // Find all keyword matches in the full text
+    let mut keyword_matches: Vec<(usize, usize, KeywordCategory)> = Vec::new();
+    
+    for keyword in &config.success_keywords {
+        find_keyword_matches(&full_text, keyword, KeywordCategory::Success, &mut keyword_matches);
+    }
+    for keyword in &config.error_keywords {
+        find_keyword_matches(&full_text, keyword, KeywordCategory::Error, &mut keyword_matches);
+    }
+    for keyword in &config.warning_keywords {
+        find_keyword_matches(&full_text, keyword, KeywordCategory::Warning, &mut keyword_matches);
+    }
+    for keyword in &config.info_keywords {
+        find_keyword_matches(&full_text, keyword, KeywordCategory::Info, &mut keyword_matches);
+    }
+
+    if keyword_matches.is_empty() {
+        return line;
+    }
+
+    // Sort matches by position
+    keyword_matches.sort_by_key(|(start, _, _)| *start);
+
+    // Remove overlapping matches
+    let mut filtered_matches: Vec<(usize, usize, KeywordCategory)> = Vec::new();
+    for m in keyword_matches {
+        if filtered_matches.is_empty() || m.0 >= filtered_matches.last().unwrap().1 {
+            filtered_matches.push(m);
+        }
+    }
+
+    // Build new spans with keyword highlighting applied on top of existing styles
+    let mut new_spans: Vec<Span<'static>> = Vec::new();
+    let mut char_offset: usize = 0;
+
+    for span in line.spans {
+        let span_text = span.content.to_string();
+        let span_len = span_text.len();
+        let span_start = char_offset;
+        let span_end = char_offset + span_len;
+        
+        // Find matches that overlap with this span
+        let overlapping: Vec<_> = filtered_matches.iter()
+            .filter(|(start, end, _)| *start < span_end && *end > span_start)
+            .cloned()
+            .collect();
+        
+        if overlapping.is_empty() {
+            // No matches in this span, keep original style
+            new_spans.push(span);
+        } else {
+            // Split span based on keyword matches
+            let mut pos = 0;
+            for (match_start, match_end, category) in overlapping {
+                // Convert to span-local offsets
+                let local_start = match_start.saturating_sub(span_start);
+                let local_end = (match_end - span_start).min(span_len);
+                
+                // Add text before match with original style
+                if local_start > pos {
+                    new_spans.push(Span::styled(
+                        span_text[pos..local_start].to_string(),
+                        span.style,
+                    ));
+                }
+                
+                // Add matched text with keyword color, preserving modifiers
+                if local_start < span_len && local_end > local_start {
+                    let keyword_color = match category {
+                        KeywordCategory::Success => Color::Green,
+                        KeywordCategory::Error => Color::Red,
+                        KeywordCategory::Warning => Color::Yellow,
+                        KeywordCategory::Info => Color::Cyan,
+                        KeywordCategory::None => Color::Reset,
+                    };
+                    
+                    // Apply keyword color but preserve other style attributes (bold, etc)
+                    let highlighted_style = span.style.fg(keyword_color);
+                    
+                    new_spans.push(Span::styled(
+                        span_text[local_start.max(pos)..local_end].to_string(),
+                        highlighted_style,
+                    ));
+                }
+                
+                pos = local_end;
+            }
+            
+            // Add remaining text with original style
+            if pos < span_len {
+                new_spans.push(Span::styled(
+                    span_text[pos..].to_string(),
+                    span.style,
+                ));
+            }
+        }
+        
+        char_offset = span_end;
+    }
+
+    Line::from(new_spans)
+}
