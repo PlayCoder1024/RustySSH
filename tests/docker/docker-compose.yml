@@ -1,0 +1,67 @@
+# SSH Test Server for RustySSH
+#
+# This Docker Compose file creates configurable SSH test servers.
+# Each server runs OpenSSH with pre-configured credentials.
+#
+# Usage:
+#   docker-compose -f tests/docker/docker-compose.yml up -d
+#   cargo test --test main
+#   docker-compose -f tests/docker/docker-compose.yml down
+
+services:
+  # Default test server with password auth
+  ssh-test-1:
+    image: lscr.io/linuxserver/openssh-server
+    container_name: rustyssh-test-1
+    environment:
+      - PUID=1000
+      - PGID=1000
+      - TZ=Etc/UTC
+      - PASSWORD_ACCESS=true
+      - USER_NAME=testuser
+      - USER_PASSWORD=testpass
+    ports:
+      - "2222:2222"
+    healthcheck:
+      test: ["CMD", "nc", "-z", "localhost", "2222"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+
+  # Second test server for parallel connection tests
+  ssh-test-2:
+    image: lscr.io/linuxserver/openssh-server
+    container_name: rustyssh-test-2
+    environment:
+      - PUID=1000
+      - PGID=1000
+      - TZ=Etc/UTC
+      - PASSWORD_ACCESS=true
+      - USER_NAME=testuser
+      - USER_PASSWORD=testpass
+    ports:
+      - "2223:2222"
+    healthcheck:
+      test: ["CMD", "nc", "-z", "localhost", "2222"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+
+  # Third test server for multi-hop tests
+  ssh-test-3:
+    image: lscr.io/linuxserver/openssh-server
+    container_name: rustyssh-test-3
+    environment:
+      - PUID=1000
+      - PGID=1000
+      - TZ=Etc/UTC
+      - PASSWORD_ACCESS=true
+      - USER_NAME=altuser
+      - USER_PASSWORD=altpass
+    ports:
+      - "2224:2222"
+    healthcheck:
+      test: ["CMD", "nc", "-z", "localhost", "2222"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
