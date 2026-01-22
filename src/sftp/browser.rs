@@ -360,7 +360,7 @@ impl FilePane {
             if entry.is_dir {
                 self.path = entry.path.clone();
                 if self.is_remote {
-                    // Remote loading will be handled separately
+                    // Remote loading will be handled by caller with SFTP session
                     Ok(true)
                 } else {
                     self.load_local().await?;
@@ -372,6 +372,44 @@ impl FilePane {
         } else {
             Ok(false)
         }
+    }
+
+    /// Load remote directory using SFTP session
+    pub fn load_remote(&mut self, sftp_session: &super::sftp_session::SftpSession) -> Result<()> {
+        self.entries = sftp_session.read_dir(&self.path)?;
+        self.cursor = 0;
+        self.sort_entries();
+        Ok(())
+    }
+
+    /// Navigate to parent directory
+    pub fn go_parent(&mut self) -> bool {
+        if let Some(parent) = self.path.parent() {
+            if parent != self.path {
+                self.path = parent.to_path_buf();
+                self.cursor = 0;
+                return true;
+            }
+        }
+        false
+    }
+
+    /// Set the filter string
+    pub fn set_filter(&mut self, filter: String) {
+        self.filter = filter;
+        self.cursor = 0;
+    }
+
+    /// Cycle to next sort order
+    pub fn cycle_sort(&mut self) {
+        self.sort = self.sort.next();
+        self.sort_entries();
+    }
+
+    /// Toggle hidden files visibility
+    pub fn toggle_hidden(&mut self) {
+        self.show_hidden = !self.show_hidden;
+        self.cursor = 0;
     }
 }
 

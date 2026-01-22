@@ -263,9 +263,21 @@ impl SshConnection {
     }
 
     /// Open SFTP subsystem
+    /// Note: The session stays in blocking mode for SFTP operations
+    /// SFTP connections should be dedicated (separate from shell connections)
     pub fn open_sftp(&self) -> Result<ssh2::Sftp> {
-        self.session.sftp()
-            .map_err(|e| anyhow!("Failed to open SFTP: {}", e))
+        // SFTP operations require blocking mode
+        // Since SFTP sessions should use dedicated connections (not shared with shell),
+        // we keep the session in blocking mode for all SFTP operations to work correctly
+        self.session.set_blocking(true);
+        
+        let sftp = self.session.sftp()
+            .map_err(|e| anyhow!("Failed to open SFTP: {}", e))?;
+        
+        // Keep in blocking mode - SFTP operations (readdir, create, read, write)
+        // all require blocking mode to work correctly
+        
+        Ok(sftp)
     }
 
     /// Check if connection is alive

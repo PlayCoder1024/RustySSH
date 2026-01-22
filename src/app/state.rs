@@ -3,9 +3,11 @@
 use super::{AppEvent, EventHandler};
 use crate::config::{Config, HostConfig};
 use crate::credentials::CredentialManager;
+use crate::sftp::{FileBrowser, SftpSession, SftpSessionManager, TransferQueue};
 use crate::ssh::{ConnectionPool, SessionManager, SshConnection, ProxyConnection};
 use crate::tui::{Icons, Theme, Tui};
 use crate::tui::terminal_render::render_screen_to_lines;
+use crate::tui::highlight::{highlight_styled_line, TerminalHighlightConfig};
 use anyhow::{anyhow, Result};
 use crossterm::event::{KeyCode, KeyModifiers, MouseEvent, MouseEventKind};
 use std::collections::HashMap;
@@ -58,6 +60,54 @@ pub struct RenderState {
     pub status_message: Option<String>,
     pub selected_host_index: usize,
     pub host_count: usize,
+    /// File browser snapshot for SFTP view
+    pub file_browser: Option<FileBrowserSnapshot>,
+    /// Transfer queue snapshot for SFTP view
+    pub transfer_info: TransferQueueSnapshot,
+}
+
+/// Snapshot of a file pane for rendering
+#[derive(Clone, Default)]
+pub struct FilePaneSnapshot {
+    pub path: String,
+    pub entries: Vec<FileEntrySnapshot>,
+    pub cursor: usize,
+    pub is_remote: bool,
+}
+
+/// Snapshot of a file entry for rendering
+#[derive(Clone)]
+pub struct FileEntrySnapshot {
+    pub name: String,
+    pub is_dir: bool,
+    pub size_display: String,
+    pub selected: bool,
+}
+
+/// Snapshot of file browser for rendering
+#[derive(Clone, Default)]
+pub struct FileBrowserSnapshot {
+    pub left: FilePaneSnapshot,
+    pub right: FilePaneSnapshot,
+    pub active_is_left: bool,
+}
+
+/// Snapshot of transfer queue for rendering
+#[derive(Clone, Default)]
+pub struct TransferQueueSnapshot {
+    pub pending_count: usize,
+    pub active_count: usize,
+    pub active_transfers: Vec<TransferItemSnapshot>,
+}
+
+/// Snapshot of a transfer item
+#[derive(Clone)]
+pub struct TransferItemSnapshot {
+    pub filename: String,
+    pub progress: f64,
+    pub speed_display: String,
+    pub eta_display: String,
+    pub is_upload: bool,
 }
 
 /// Active SSH channel for a session
@@ -98,6 +148,18 @@ pub struct App {
     pub icons: Icons,
     /// Credential manager for secure password storage
     pub credentials: CredentialManager,
+    /// SFTP session manager
+    pub sftp_sessions: SftpSessionManager,
+    /// File browser for SFTP view
+    pub file_browser: Option<FileBrowser>,
+    /// Transfer queue for SFTP operations
+    pub transfer_queue: TransferQueue,
+    /// Active SFTP host ID (for which host the SFTP view is showing)
+    pub active_sftp_host: Option<Uuid>,
+    /// View history stack for back navigation
+    pub view_history: Vec<View>,
+    /// Session passwords for SFTP reuse (cleared on disconnect)
+    session_passwords: HashMap<Uuid, String>,
 }
 
 impl App {
@@ -125,6 +187,12 @@ impl App {
             theme,
             icons,
             credentials,
+            sftp_sessions: SftpSessionManager::new(),
+            file_browser: None,
+            transfer_queue: TransferQueue::default(),
+            active_sftp_host: None,
+            view_history: Vec::new(),
+            session_passwords: HashMap::new(),
         })
     }
 
@@ -145,6 +213,25 @@ impl App {
         self.all_hosts().get(self.selected_host_index).copied()
     }
 
+    /// Push current view to history and switch to new view
+    fn push_view(&mut self, new_view: View) {
+        // Don't push if same view
+        if self.view != new_view {
+            self.view_history.push(self.view);
+            self.view = new_view;
+        }
+    }
+
+    /// Pop view from history (go back)
+    fn pop_view(&mut self) {
+        if let Some(prev_view) = self.view_history.pop() {
+            self.view = prev_view;
+        } else {
+            // Default to connections if no history
+            self.view = View::Connections;
+        }
+    }
+
     /// Run the main application loop
     pub async fn run(&mut self) -> Result<()> {
         self.tui.enter()?;
@@ -157,22 +244,72 @@ impl App {
                 theme: self.theme.clone(),
                 icons: self.icons.clone(),
                 config: self.config.clone(),
-                sessions: self
-                    .sessions
-                    .list()
-                    .iter()
-                    .map(|s| SessionInfo {
-                        id: s.id,
-                        name: s.name.clone(),
-                        styled_lines: render_screen_to_lines(s.screen()),
-                        cursor_position: s.cursor_position(),
-                        cursor_visible: s.cursor_visible(),
-                    })
-                    .collect(),
+                sessions: {
+                    let highlight_config = TerminalHighlightConfig::default();
+                    self.sessions
+                        .list()
+                        .iter()
+                        .map(|s| {
+                            let raw_lines = render_screen_to_lines(s.screen());
+                            SessionInfo {
+                                id: s.id,
+                                name: s.name.clone(),
+                                styled_lines: raw_lines
+                                    .into_iter()
+                                    .map(|line| highlight_styled_line(line, &highlight_config))
+                                    .collect(),
+                                cursor_position: s.cursor_position(),
+                                cursor_visible: s.cursor_visible(),
+                            }
+                        })
+                        .collect()
+                },
                 active_session: self.active_session,
                 status_message: self.status_message.clone(),
                 selected_host_index: self.selected_host_index,
                 host_count: self.all_hosts().len(),
+                file_browser: self.file_browser.as_ref().map(|browser| {
+                    use crate::sftp::PaneSide;
+                    FileBrowserSnapshot {
+                        left: FilePaneSnapshot {
+                            path: browser.left.path.display().to_string(),
+                            entries: browser.left.filtered_entries().iter().map(|e| FileEntrySnapshot {
+                                name: e.name.clone(),
+                                is_dir: e.is_dir,
+                                size_display: e.size_display(),
+                                selected: e.selected,
+                            }).collect(),
+                            cursor: browser.left.cursor,
+                            is_remote: browser.left.is_remote,
+                        },
+                        right: FilePaneSnapshot {
+                            path: browser.right.path.display().to_string(),
+                            entries: browser.right.filtered_entries().iter().map(|e| FileEntrySnapshot {
+                                name: e.name.clone(),
+                                is_dir: e.is_dir,
+                                size_display: e.size_display(),
+                                selected: e.selected,
+                            }).collect(),
+                            cursor: browser.right.cursor,
+                            is_remote: browser.right.is_remote,
+                        },
+                        active_is_left: browser.active == PaneSide::Left,
+                    }
+                }),
+                transfer_info: TransferQueueSnapshot {
+                    pending_count: self.transfer_queue.pending().len(),
+                    active_count: self.transfer_queue.active().len(),
+                    active_transfers: self.transfer_queue.active().iter().map(|t| {
+                        use crate::sftp::TransferDirection;
+                        TransferItemSnapshot {
+                            filename: t.source.file_name().map(|n| n.to_string_lossy().to_string()).unwrap_or_default(),
+                            progress: t.progress(),
+                            speed_display: t.speed_display(),
+                            eta_display: t.eta_display(),
+                            is_upload: t.direction == TransferDirection::Upload,
+                        }
+                    }).collect(),
+                },
             };
 
             // Render UI
@@ -339,7 +476,12 @@ impl App {
             KeyCode::Char('s') => self.view = View::Settings,
             KeyCode::Char('K') => self.view = View::Keys, // Shift+K for Keys view
             KeyCode::Char('t') => self.view = View::Tunnels,
-            KeyCode::Char('f') => self.view = View::Sftp,
+            KeyCode::Char('f') => {
+                // Open SFTP for selected host
+                if let Some(host) = self.selected_host().cloned() {
+                    self.open_sftp_for_host(host).await?;
+                }
+            }
             KeyCode::Up | KeyCode::Char('k') => {
                 if self.selected_host_index > 0 {
                     self.selected_host_index -= 1;
@@ -823,6 +965,11 @@ impl App {
                         self.active_session = Some(session_id);
                         self.view = View::Session;
                         self.status_message = Some(format!("Connected to {}", host_name));
+                        
+                        // Store password for SFTP reuse (if password was used)
+                        if let Some(pwd) = passwords_used.get(&host_id) {
+                            self.session_passwords.insert(host_id, pwd.clone());
+                        }
                     }
                     Err(e) => {
                         self.status_message = Some(format!("Failed to open shell: {}", e));
@@ -842,6 +989,171 @@ impl App {
             }
         }
 
+        Ok(())
+    }
+
+    /// Open SFTP session for a host, creating a new SSH connection for SFTP
+    /// We create a separate connection because ssh2 sessions can't safely
+    /// share between blocking SFTP and non-blocking shell I/O
+    async fn open_sftp_for_host(&mut self, host: HostConfig) -> Result<()> {
+        let host_id = host.id;
+        let host_name = host.name.clone();
+        
+        // Check if we already have an SFTP session for this host
+        if self.sftp_sessions.get_by_host(host_id).is_some() {
+            self.active_sftp_host = Some(host_id);
+            self.push_view(View::Sftp);
+            
+            // Initialize file browser if needed
+            if self.file_browser.is_none() {
+                let mut browser = FileBrowser::new();
+                browser.left.load_local().await?;
+                self.file_browser = Some(browser);
+            }
+            
+            // Reload remote pane
+            if let Some(browser) = &mut self.file_browser {
+                if let Some(sftp_session) = self.sftp_sessions.get_by_host(host_id) {
+                    browser.right.path = sftp_session.cwd.clone();
+                    let _ = browser.right.load_remote(sftp_session);
+                }
+            }
+            
+            return Ok(());
+        }
+        
+        // Get password: first check session passwords (from current session), then credential manager
+        let password = self.session_passwords.get(&host_id).cloned()
+            .or_else(|| {
+                if self.credentials.is_unlocked() {
+                    self.credentials.get_password(host_id).ok().flatten()
+                } else {
+                    None
+                }
+            });
+        
+        // Check if we have a password or if the host uses key/agent authentication
+        let has_key_auth = matches!(
+            host.auth,
+            crate::config::AuthMethod::KeyFile { .. } | 
+            crate::config::AuthMethod::Agent | 
+            crate::config::AuthMethod::Certificate { .. }
+        );
+        if password.is_none() && !has_key_auth {
+            self.status_message = Some(format!(
+                "No password available for SFTP. Reconnect to {} first.",
+                host_name
+            ));
+            return Ok(());
+        }
+        
+        // Create a new connection for SFTP (separate from shell connection)
+        // Must use proxy chain just like connect_to_host does
+        let pwd_source = if self.session_passwords.contains_key(&host_id) {
+            "session"
+        } else if password.is_some() {
+            "credential manager"
+        } else {
+            "none"
+        };
+        let has_pwd = password.is_some();
+        
+        // Resolve the full proxy chain (same as connect_to_host)
+        let proxy_chain = self.config.resolve_proxy_chain(&host);
+        
+        // Collect passwords for all hosts in the chain
+        let mut passwords: std::collections::HashMap<uuid::Uuid, String> = std::collections::HashMap::new();
+        
+        // Get passwords for all hosts in the chain
+        for chain_host in &proxy_chain {
+            // First check session passwords
+            if let Some(pwd) = self.session_passwords.get(&chain_host.id) {
+                passwords.insert(chain_host.id, pwd.clone());
+            } else if self.credentials.is_unlocked() {
+                // Try credential manager
+                if let Ok(Some(pwd)) = self.credentials.get_password(chain_host.id) {
+                    passwords.insert(chain_host.id, pwd);
+                }
+            }
+        }
+        
+        // For the target host, also try the password variable we already retrieved
+        if let Some(pwd) = password.clone() {
+            passwords.entry(host_id).or_insert(pwd);
+        }
+        
+        let sftp_result = tokio::task::spawn_blocking(move || {
+            // Connect through the proxy chain (same logic as connect_to_host)
+            let mut prev_connection: Option<SshConnection> = None;
+            
+            for (i, chain_host) in proxy_chain.iter().enumerate() {
+                let is_last = i == proxy_chain.len() - 1;
+                let password = passwords.get(&chain_host.id).map(|s| s.as_str());
+                
+                let proxy = if let Some(conn) = prev_connection.take() {
+                    ProxyConnection::JumpHost {
+                        connection: Box::new(conn),
+                    }
+                } else {
+                    ProxyConnection::Direct
+                };
+                
+                let connection = SshConnection::connect_via_proxy(
+                    chain_host.clone(),
+                    proxy,
+                    password,
+                    None, // passphrase
+                )?;
+                
+                if is_last {
+                    // Open SFTP on the final connection (target host)
+                    let sftp = connection.open_sftp()?;
+                    return Ok::<_, anyhow::Error>((connection, sftp));
+                } else {
+                    prev_connection = Some(connection);
+                }
+            }
+            
+            Err(anyhow::anyhow!("Empty proxy chain"))
+        }).await?;
+        
+        match sftp_result {
+            Ok((connection, sftp)) => {
+                let conn_id = connection.id;
+                
+                // Store connection
+                self.connections.add(connection);
+                
+                // Create SFTP session with username for home directory
+                let username = &host.username;
+                let sftp_session = SftpSession::new(sftp, host_id, conn_id, username)?;
+                let session_cwd = sftp_session.cwd.clone();
+                self.sftp_sessions.add(sftp_session);
+                self.active_sftp_host = Some(host_id);
+                
+                // Initialize file browser
+                let mut browser = if let Some(b) = self.file_browser.take() {
+                    b
+                } else {
+                    FileBrowser::new()
+                };
+                
+                browser.left.load_local().await?;
+                browser.right.path = session_cwd;
+                
+                if let Some(sftp_session) = self.sftp_sessions.get_by_host(host_id) {
+                    let _ = browser.right.load_remote(sftp_session);
+                }
+                
+                self.file_browser = Some(browser);
+                self.push_view(View::Sftp);
+                self.status_message = Some(format!("SFTP connected to {}", host_name));
+            }
+            Err(e) => {
+                self.status_message = Some(format!("SFTP failed (pwd from {}, has_pwd={}): {}", pwd_source, has_pwd, e));
+            }
+        }
+        
         Ok(())
     }
 
@@ -925,6 +1237,23 @@ impl App {
             return Ok(());
         }
 
+        // Check for Shift+F to open SFTP for current session's host
+        if key.code == KeyCode::Char('F') && key.modifiers.contains(KeyModifiers::SHIFT) {
+            // Get the host ID from the current session
+            if let Some(session_id) = self.active_session {
+                if let Some(session) = self.sessions.get(session_id) {
+                    let host_id = session.host_id;
+                    // Find the host config
+                    if let Some(host) = self.all_hosts().iter().find(|h| h.id == host_id).cloned() {
+                        self.open_sftp_for_host(host.clone()).await?;
+                        return Ok(());
+                    }
+                }
+            }
+            self.status_message = Some("No active session for SFTP".to_string());
+            return Ok(());
+        }
+
         // Forward key to SSH session
         if let Some(session_id) = self.active_session {
             if let Some(channel) = self.channels.get(&session_id) {
@@ -939,11 +1268,375 @@ impl App {
     }
 
     async fn handle_sftp_key(&mut self, key: crossterm::event::KeyEvent) -> Result<()> {
+        // Handle SFTP-specific keys
         match key.code {
-            KeyCode::Esc => self.view = View::Connections,
+            // Navigation keys
+            KeyCode::Esc => {
+                self.pop_view();
+                // Clear active SFTP host only if not returning to SFTP
+                if self.view != View::Sftp {
+                    self.active_sftp_host = None;
+                }
+            }
             KeyCode::Char('?') => self.view = View::Help,
+            
+            // Pane switching
+            KeyCode::Tab => {
+                if let Some(browser) = &mut self.file_browser {
+                    browser.switch_pane();
+                }
+            }
+            
+            // Cursor movement
+            KeyCode::Up | KeyCode::Char('k') => {
+                if let Some(browser) = &mut self.file_browser {
+                    browser.active_pane_mut().cursor_up();
+                }
+            }
+            KeyCode::Down | KeyCode::Char('j') => {
+                if let Some(browser) = &mut self.file_browser {
+                    browser.active_pane_mut().cursor_down();
+                }
+            }
+            KeyCode::Home | KeyCode::Char('g') => {
+                if let Some(browser) = &mut self.file_browser {
+                    browser.active_pane_mut().cursor_top();
+                }
+            }
+            KeyCode::End | KeyCode::Char('G') => {
+                if let Some(browser) = &mut self.file_browser {
+                    browser.active_pane_mut().cursor_bottom();
+                }
+            }
+            KeyCode::PageUp => {
+                if let Some(browser) = &mut self.file_browser {
+                    browser.active_pane_mut().page_up(10);
+                }
+            }
+            KeyCode::PageDown => {
+                if let Some(browser) = &mut self.file_browser {
+                    browser.active_pane_mut().page_down(10);
+                }
+            }
+            
+            // Selection
+            KeyCode::Char(' ') => {
+                if let Some(browser) = &mut self.file_browser {
+                    browser.active_pane_mut().toggle_selection();
+                    browser.active_pane_mut().cursor_down();
+                }
+            }
+            
+            // Enter directory or trigger transfer
+            KeyCode::Enter => {
+                self.handle_sftp_enter().await?;
+            }
+            
+            // Backspace goes up a directory
+            KeyCode::Backspace => {
+                self.handle_sftp_go_parent().await?;
+            }
+            
+            // Copy to other pane (F5 or 'c')
+            KeyCode::F(5) | KeyCode::Char('c') => {
+                self.handle_sftp_copy().await?;
+            }
+            
+            // Move to other pane (F6 or 'm')
+            KeyCode::F(6) | KeyCode::Char('m') => {
+                self.handle_sftp_move().await?;
+            }
+            
+            // Delete (F8 or 'd') - local only
+            KeyCode::F(8) | KeyCode::Char('d') => {
+                self.handle_sftp_delete().await?;
+            }
+            
+            // New directory (n)
+            KeyCode::Char('n') => {
+                self.status_message = Some("New directory: not yet implemented".to_string());
+            }
+            
+            // Rename (r)
+            KeyCode::Char('r') => {
+                self.status_message = Some("Rename: not yet implemented".to_string());
+            }
+            
+            // Toggle hidden files (h)
+            KeyCode::Char('h') => {
+                if let Some(browser) = &mut self.file_browser {
+                    browser.active_pane_mut().toggle_hidden();
+                }
+            }
+            
+            // Sort cycling (s)
+            KeyCode::Char('s') => {
+                if let Some(browser) = &mut self.file_browser {
+                    browser.active_pane_mut().cycle_sort();
+                }
+            }
+            
+            // Refresh (F2)
+            KeyCode::F(2) => {
+                self.handle_sftp_refresh().await?;
+            }
+            
             _ => {}
         }
+        Ok(())
+    }
+
+    /// Handle Enter key in SFTP view - navigate into directory or start transfer
+    async fn handle_sftp_enter(&mut self) -> Result<()> {
+        let entry_info = if let Some(browser) = &self.file_browser {
+            browser.active_pane().current_entry().map(|e| (e.is_dir, e.path.clone()))
+        } else {
+            None
+        };
+
+        if let Some((is_dir, path)) = entry_info {
+            if is_dir {
+                // Navigate into directory
+                if let Some(browser) = &mut self.file_browser {
+                    let is_remote = browser.active_pane().is_remote;
+                    browser.active_pane_mut().path = path;
+                    browser.active_pane_mut().cursor = 0;
+                    
+                    if is_remote {
+                        // Reload remote pane
+                        if let Some(host_id) = self.active_sftp_host {
+                            if let Some(sftp_session) = self.sftp_sessions.get_by_host(host_id) {
+                                let path = browser.active_pane().path.clone();
+                                if let Err(e) = browser.active_pane_mut().load_remote(sftp_session) {
+                                    self.status_message = Some(format!("Failed to load {}: {}", path.display(), e));
+                                }
+                            }
+                        }
+                    } else {
+                        // Reload local pane
+                        if let Err(e) = browser.active_pane_mut().load_local().await {
+                            self.status_message = Some(format!("Failed to load directory: {}", e));
+                        }
+                    }
+                }
+            } else {
+                // File selected - initiate transfer
+                self.handle_sftp_copy().await?;
+            }
+        }
+        Ok(())
+    }
+
+    /// Go to parent directory in SFTP view
+    async fn handle_sftp_go_parent(&mut self) -> Result<()> {
+        let changed = if let Some(browser) = &mut self.file_browser {
+            browser.active_pane_mut().go_parent()
+        } else {
+            false
+        };
+        
+        if changed {
+            self.handle_sftp_refresh().await?;
+        }
+        Ok(())
+    }
+
+    /// Refresh current directory in SFTP view
+    async fn handle_sftp_refresh(&mut self) -> Result<()> {
+        if let Some(browser) = &mut self.file_browser {
+            let is_remote = browser.active_pane().is_remote;
+            
+            if is_remote {
+                if let Some(host_id) = self.active_sftp_host {
+                    if let Some(sftp_session) = self.sftp_sessions.get_by_host(host_id) {
+                        if let Err(e) = browser.active_pane_mut().load_remote(sftp_session) {
+                            self.status_message = Some(format!("Refresh failed: {}", e));
+                        }
+                    }
+                }
+            } else {
+                if let Err(e) = browser.active_pane_mut().load_local().await {
+                    self.status_message = Some(format!("Refresh failed: {}", e));
+                }
+            }
+        }
+        Ok(())
+    }
+
+    /// Handle copy operation in SFTP view
+    async fn handle_sftp_copy(&mut self) -> Result<()> {
+        // Get selected files from active pane
+        let (source_files, is_upload) = if let Some(browser) = &self.file_browser {
+            let active = browser.active_pane();
+            let selected = active.selected_entries();
+            
+            // If no selections, use current entry
+            let files: Vec<_> = if selected.is_empty() {
+                active.current_entry()
+                    .filter(|e| e.name != "..")
+                    .into_iter()
+                    .collect()
+            } else {
+                selected.into_iter().filter(|e| e.name != "..").collect()
+            };
+            
+            let is_upload = !active.is_remote; // Uploading if source is local
+            (files.iter().map(|f| (f.path.clone(), f.size)).collect::<Vec<_>>(), is_upload)
+        } else {
+            return Ok(());
+        };
+        
+        if source_files.is_empty() {
+            self.status_message = Some("No files selected".to_string());
+            return Ok(());
+        }
+        
+        // Get SFTP host and destination path
+        let host_id = match self.active_sftp_host {
+            Some(id) => id,
+            None => {
+                self.status_message = Some("No active SFTP connection".to_string());
+                return Ok(());
+            }
+        };
+        
+        let dest_path = self.file_browser.as_ref()
+            .map(|b| b.inactive_pane().path.clone())
+            .unwrap_or_default();
+        
+        let direction = if is_upload {
+            crate::sftp::TransferDirection::Upload
+        } else {
+            crate::sftp::TransferDirection::Download
+        };
+        
+        // Get SFTP session for transfer
+        let sftp_session = match self.sftp_sessions.get_by_host(host_id) {
+            Some(s) => s,
+            None => {
+                self.status_message = Some("SFTP session not found".to_string());
+                return Ok(());
+            }
+        };
+        
+        let file_count = source_files.len();
+        
+        for (source, size) in source_files {
+            let filename = source.file_name().map(|n| n.to_os_string()).unwrap_or_default();
+            let dest = dest_path.join(&filename);
+            
+            // Execute transfer immediately (synchronous for now, proper async later)
+            let result = if is_upload {
+                // Upload: read local file, write to remote
+                self.execute_upload(&source, &dest, sftp_session)
+            } else {
+                // Download: read from remote, write to local
+                self.execute_download(&source, &dest, sftp_session)
+            };
+            
+            match result {
+                Ok(_) => {
+                    self.status_message = Some(format!("Transferred: {}", filename.to_string_lossy()));
+                }
+                Err(e) => {
+                    self.status_message = Some(format!("Transfer failed: {}", e));
+                }
+            }
+        }
+        
+        // Refresh destination pane
+        if let Some(browser) = &mut self.file_browser {
+            if is_upload {
+                // Refresh remote pane after upload
+                if let Some(sftp_session) = self.sftp_sessions.get_by_host(host_id) {
+                    let _ = browser.right.load_remote(sftp_session);
+                }
+            } else {
+                // Refresh local pane after download
+                let _ = browser.left.load_local().await;
+            }
+        }
+        
+        self.status_message = Some(format!("Transferred {} file(s)", file_count));
+        Ok(())
+    }
+
+    /// Execute upload from local to remote
+    fn execute_upload(&self, source: &std::path::Path, dest: &std::path::Path, sftp_session: &SftpSession) -> Result<()> {
+        use std::io::{Read, Write};
+        
+        // Read local file
+        let mut local_file = std::fs::File::open(source)?;
+        let mut buffer = Vec::new();
+        local_file.read_to_end(&mut buffer)?;
+        
+        // Write to remote
+        let mut remote_file = sftp_session.create(dest)?;
+        remote_file.write_all(&buffer)?;
+        
+        Ok(())
+    }
+
+    /// Execute download from remote to local
+    fn execute_download(&self, source: &std::path::Path, dest: &std::path::Path, sftp_session: &SftpSession) -> Result<()> {
+        use std::io::{Read, Write};
+        
+        // Read remote file
+        let mut remote_file = sftp_session.open_read(source)?;
+        let mut buffer = Vec::new();
+        remote_file.read_to_end(&mut buffer)?;
+        
+        // Write to local
+        let mut local_file = std::fs::File::create(dest)?;
+        local_file.write_all(&buffer)?;
+        
+        Ok(())
+    }
+
+    /// Handle move operation in SFTP view
+    async fn handle_sftp_move(&mut self) -> Result<()> {
+        // For now, same as copy but we would mark for deletion after
+        self.status_message = Some("Move: not yet implemented (use copy + delete)".to_string());
+        Ok(())
+    }
+
+    /// Handle delete operation in SFTP view - LOCAL ONLY for safety
+    async fn handle_sftp_delete(&mut self) -> Result<()> {
+        if let Some(browser) = &self.file_browser {
+            if browser.active_pane().is_remote {
+                self.status_message = Some("Delete disabled on remote for safety".to_string());
+                return Ok(());
+            }
+        }
+        
+        // Get selected files from active pane (local only)
+        let files_to_delete: Vec<_> = if let Some(browser) = &self.file_browser {
+            let active = browser.active_pane();
+            let selected = active.selected_entries();
+            
+            if selected.is_empty() {
+                active.current_entry()
+                    .filter(|e| e.name != "..")
+                    .into_iter()
+                    .map(|e| e.path.clone())
+                    .collect()
+            } else {
+                selected.into_iter()
+                    .filter(|e| e.name != "..")
+                    .map(|e| e.path.clone())
+                    .collect()
+            }
+        } else {
+            return Ok(());
+        };
+        
+        if files_to_delete.is_empty() {
+            self.status_message = Some("No files selected for deletion".to_string());
+            return Ok(());
+        }
+        
+        // TODO: Add confirmation prompt
+        self.status_message = Some(format!("Delete {} file(s): confirmation not yet implemented", files_to_delete.len()));
         Ok(())
     }
 
