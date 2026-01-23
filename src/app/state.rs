@@ -1082,6 +1082,7 @@ impl App {
             passwords.entry(host_id).or_insert(pwd);
         }
         
+        let username = host.username.clone();
         let sftp_result = tokio::task::spawn_blocking(move || {
             // Connect through the proxy chain (same logic as connect_to_host)
             let mut prev_connection: Option<SshConnection> = None;
@@ -1108,7 +1109,16 @@ impl App {
                 if is_last {
                     // Open SFTP on the final connection (target host)
                     let sftp = connection.open_sftp()?;
-                    return Ok::<_, anyhow::Error>((connection, sftp));
+                    let conn_id = connection.id;
+                    
+                    // Create SFTP session with blocking calls INSIDE spawn_blocking
+                    let sftp_session = SftpSession::new(sftp, host_id, conn_id, &username)?;
+                    let session_cwd = sftp_session.cwd.clone();
+                    
+                    // Load initial directory listing (blocking) INSIDE spawn_blocking
+                    let entries = sftp_session.read_dir(&session_cwd).unwrap_or_default();
+                    
+                    return Ok::<_, anyhow::Error>((connection, sftp_session, entries));
                 } else {
                     prev_connection = Some(connection);
                 }
@@ -1118,20 +1128,16 @@ impl App {
         }).await?;
         
         match sftp_result {
-            Ok((connection, sftp)) => {
-                let conn_id = connection.id;
-                
+            Ok((connection, sftp_session, initial_entries)) => {
                 // Store connection
                 self.connections.add(connection);
                 
-                // Create SFTP session with username for home directory
-                let username = &host.username;
-                let sftp_session = SftpSession::new(sftp, host_id, conn_id, username)?;
+                // Store SFTP session (already created in blocking context)
                 let session_cwd = sftp_session.cwd.clone();
                 self.sftp_sessions.add(sftp_session);
                 self.active_sftp_host = Some(host_id);
                 
-                // Initialize file browser
+                // Initialize file browser with pre-loaded entries
                 let mut browser = if let Some(b) = self.file_browser.take() {
                     b
                 } else {
@@ -1140,10 +1146,8 @@ impl App {
                 
                 browser.left.load_local().await?;
                 browser.right.path = session_cwd;
-                
-                if let Some(sftp_session) = self.sftp_sessions.get_by_host(host_id) {
-                    let _ = browser.right.load_remote(sftp_session);
-                }
+                browser.right.entries = initial_entries;
+                browser.right.sort_entries();
                 
                 self.file_browser = Some(browser);
                 self.push_view(View::Sftp);
