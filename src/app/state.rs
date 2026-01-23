@@ -12,7 +12,7 @@ use anyhow::{anyhow, Result};
 use crossterm::event::{KeyCode, KeyModifiers, MouseEvent, MouseEventKind};
 use std::collections::HashMap;
 use std::io::{Read, Write};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 use tokio::sync::mpsc;
 use uuid::Uuid;
 
@@ -64,6 +64,16 @@ pub struct RenderState {
     pub file_browser: Option<FileBrowserSnapshot>,
     /// Transfer queue snapshot for SFTP view
     pub transfer_info: TransferQueueSnapshot,
+    /// Session order for consistent tab display
+    pub session_order: Vec<Uuid>,
+    /// Session list overlay visible
+    pub session_list_visible: bool,
+    /// Selected index in session list overlay
+    pub session_list_selected: usize,
+    /// Connection overlay visible
+    pub show_connection_overlay: bool,
+    /// Escape prefix active indicator
+    pub escape_prefix_active: bool,
 }
 
 /// Snapshot of a file pane for rendering
@@ -160,6 +170,18 @@ pub struct App {
     pub view_history: Vec<View>,
     /// Session passwords for SFTP reuse (cleared on disconnect)
     session_passwords: HashMap<Uuid, String>,
+    /// Order of sessions for consistent tab display
+    pub session_order: Vec<Uuid>,
+    /// Escape prefix active (Ctrl+B pressed)
+    pub escape_prefix_active: bool,
+    /// Time when escape prefix was activated (for timeout)
+    pub escape_prefix_time: Option<Instant>,
+    /// Session list overlay visibility
+    pub session_list_visible: bool,
+    /// Selected index in session list overlay
+    pub session_list_selected: usize,
+    /// Connection overlay visible (for Ctrl+B c)
+    pub show_connection_overlay: bool,
 }
 
 impl App {
@@ -193,6 +215,12 @@ impl App {
             active_sftp_host: None,
             view_history: Vec::new(),
             session_passwords: HashMap::new(),
+            session_order: Vec::new(),
+            escape_prefix_active: false,
+            escape_prefix_time: None,
+            session_list_visible: false,
+            session_list_selected: 0,
+            show_connection_overlay: false,
         })
     }
 
@@ -310,6 +338,11 @@ impl App {
                         }
                     }).collect(),
                 },
+                session_order: self.session_order.clone(),
+                session_list_visible: self.session_list_visible,
+                session_list_selected: self.session_list_selected,
+                show_connection_overlay: self.show_connection_overlay,
+                escape_prefix_active: self.escape_prefix_active,
             };
 
             // Render UI
@@ -350,6 +383,10 @@ impl App {
                         KeyCode::Char('q') => {
                             // Ctrl+Q always quits (escape hatch from session)
                             self.state = AppState::Quit;
+                        }
+                        KeyCode::Char('b') if self.view == View::Session => {
+                            // Ctrl+B is the escape prefix - route to handle_session_key
+                            self.handle_key(key).await?;
                         }
                         _ => {
                             // Forward other Ctrl+key combos to session
@@ -963,6 +1000,7 @@ impl App {
 
                         // Switch to session view
                         self.active_session = Some(session_id);
+                        self.session_order.push(session_id);
                         self.view = View::Session;
                         self.status_message = Some(format!("Connected to {}", host_name));
                         
@@ -1235,7 +1273,96 @@ impl App {
     }
 
     async fn handle_session_key(&mut self, key: crossterm::event::KeyEvent) -> Result<()> {
-        // Check for escape back to connections
+        // Escape prefix timeout (1 second)
+        const ESCAPE_PREFIX_TIMEOUT: Duration = Duration::from_secs(1);
+        
+        // Check for escape prefix timeout
+        if self.escape_prefix_active {
+            if let Some(prefix_time) = self.escape_prefix_time {
+                if prefix_time.elapsed() > ESCAPE_PREFIX_TIMEOUT {
+                    self.escape_prefix_active = false;
+                    self.escape_prefix_time = None;
+                }
+            }
+        }
+        
+        // Handle session list overlay if visible
+        if self.session_list_visible {
+            return self.handle_session_list_key(key).await;
+        }
+        
+        // Handle connection overlay if visible
+        if self.show_connection_overlay {
+            return self.handle_connection_overlay_key(key).await;
+        }
+        
+        // Check for Ctrl+B (escape prefix)
+        if key.code == KeyCode::Char('b') && key.modifiers.contains(KeyModifiers::CONTROL) {
+            if self.escape_prefix_active {
+                // Double Ctrl+B: send literal Ctrl+B to host
+                self.escape_prefix_active = false;
+                self.escape_prefix_time = None;
+                if let Some(session_id) = self.active_session {
+                    if let Some(channel) = self.channels.get(&session_id) {
+                        let _ = channel.input_tx.send(vec![0x02]); // Ctrl+B = 0x02
+                    }
+                }
+            } else {
+                // Enter escape prefix mode
+                self.escape_prefix_active = true;
+                self.escape_prefix_time = Some(Instant::now());
+                self.status_message = Some("Ctrl+B".to_string());
+            }
+            return Ok(());
+        }
+        
+        // Handle escape prefix commands
+        if self.escape_prefix_active {
+            self.escape_prefix_active = false;
+            self.escape_prefix_time = None;
+            self.status_message = None;
+            
+            match key.code {
+                // n - Next session
+                KeyCode::Char('n') => {
+                    self.switch_to_next_session();
+                    return Ok(());
+                }
+                // p - Previous session
+                KeyCode::Char('p') => {
+                    self.switch_to_prev_session();
+                    return Ok(());
+                }
+                // 1-9 - Jump to session by index
+                KeyCode::Char(c) if c.is_ascii_digit() && c != '0' => {
+                    let index = (c as usize) - ('1' as usize);
+                    self.switch_to_session_index(index);
+                    return Ok(());
+                }
+                // l - Show session list
+                KeyCode::Char('l') => {
+                    self.session_list_visible = true;
+                    self.session_list_selected = self.get_active_session_index();
+                    return Ok(());
+                }
+                // c - New connection (show connection overlay)
+                KeyCode::Char('c') => {
+                    self.show_connection_overlay = true;
+                    return Ok(());
+                }
+                // w - Close current session
+                KeyCode::Char('w') => {
+                    self.close_current_session().await;
+                    return Ok(());
+                }
+                // Any other key: forward to host (prefix was accidental)
+                _ => {
+                    // Fall through to normal key handling
+                }
+            }
+        }
+        
+        // Check for Shift+Esc to return to connections (legacy behavior)
         if key.code == KeyCode::Esc && key.modifiers.contains(KeyModifiers::SHIFT) {
             self.view = View::Connections;
             return Ok(());
@@ -1269,6 +1396,128 @@ impl App {
         }
 
         Ok(())
+    }
+    
+    /// Handle keys when session list overlay is visible
+    async fn handle_session_list_key(&mut self, key: crossterm::event::KeyEvent) -> Result<()> {
+        match key.code {
+            KeyCode::Esc | KeyCode::Char('l') => {
+                self.session_list_visible = false;
+            }
+            KeyCode::Up | KeyCode::Char('k') => {
+                if self.session_list_selected > 0 {
+                    self.session_list_selected -= 1;
+                }
+            }
+            KeyCode::Down | KeyCode::Char('j') => {
+                if self.session_list_selected + 1 < self.session_order.len() {
+                    self.session_list_selected += 1;
+                }
+            }
+            KeyCode::Enter => {
+                self.switch_to_session_index(self.session_list_selected);
+                self.session_list_visible = false;
+            }
+            KeyCode::Char(c) if c.is_ascii_digit() && c != '0' => {
+                let index = (c as usize) - ('1' as usize);
+                self.switch_to_session_index(index);
+                self.session_list_visible = false;
+            }
+            _ => {}
+        }
+        Ok(())
+    }
+    
+    /// Handle keys when connection overlay is visible
+    async fn handle_connection_overlay_key(&mut self, key: crossterm::event::KeyEvent) -> Result<()> {
+        match key.code {
+            KeyCode::Esc => {
+                self.show_connection_overlay = false;
+            }
+            KeyCode::Up | KeyCode::Char('k') => {
+                if self.selected_host_index > 0 {
+                    self.selected_host_index -= 1;
+                }
+            }
+            KeyCode::Down | KeyCode::Char('j') => {
+                let host_count = self.all_hosts().len();
+                if self.selected_host_index + 1 < host_count {
+                    self.selected_host_index += 1;
+                }
+            }
+            KeyCode::Enter => {
+                // Connect to selected host while keeping current sessions
+                if let Some(host) = self.selected_host().cloned() {
+                    self.show_connection_overlay = false;
+                    self.connect_to_host(host).await?;
+                }
+            }
+            _ => {}
+        }
+        Ok(())
+    }
+    
+    /// Get index of active session in session_order
+    fn get_active_session_index(&self) -> usize {
+        if let Some(active_id) = self.active_session {
+            self.session_order.iter().position(|&id| id == active_id).unwrap_or(0)
+        } else {
+            0
+        }
+    }
+    
+    /// Switch to next session
+    fn switch_to_next_session(&mut self) {
+        if self.session_order.is_empty() {
+            return;
+        }
+        let current_index = self.get_active_session_index();
+        let next_index = (current_index + 1) % self.session_order.len();
+        self.switch_to_session_index(next_index);
+    }
+    
+    /// Switch to previous session
+    fn switch_to_prev_session(&mut self) {
+        if self.session_order.is_empty() {
+            return;
+        }
+        let current_index = self.get_active_session_index();
+        let prev_index = if current_index == 0 {
+            self.session_order.len() - 1
+        } else {
+            current_index - 1
+        };
+        self.switch_to_session_index(prev_index);
+    }
+    
+    /// Switch to session by index
+    fn switch_to_session_index(&mut self, index: usize) {
+        if index < self.session_order.len() {
+            self.active_session = Some(self.session_order[index]);
+            self.status_message = Some(format!("Session {}", index + 1));
+        }
+    }
+    
+    /// Close current session
+    async fn close_current_session(&mut self) {
+        if let Some(session_id) = self.active_session {
+            // Remove from session order
+            self.session_order.retain(|&id| id != session_id);
+            
+            // Remove channel and session
+            self.channels.remove(&session_id);
+            self.sessions.remove(session_id);
+            
+            // Switch to another session or go back to connections
+            if let Some(&next_session) = self.session_order.first() {
+                self.active_session = Some(next_session);
+                self.status_message = Some("Session closed".to_string());
+            } else {
+                self.active_session = None;
+                self.view = View::Connections;
+                self.status_message = Some("All sessions closed".to_string());
+            }
+        }
     }
 
     async fn handle_sftp_key(&mut self, key: crossterm::event::KeyEvent) -> Result<()> {

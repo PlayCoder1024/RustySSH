@@ -58,7 +58,15 @@ pub fn render_with_state(frame: &mut Frame, state: &RenderState) {
     // Render view based on current state
     match state.view {
         View::Connections => views::connections::render_state(frame, state, chunks[0]),
-        View::Session => views::session::render_state(frame, state, chunks[0]),
+        View::Session => {
+            views::session::render_state(frame, state, chunks[0]);
+            // Render overlays on top of session view
+            if state.session_list_visible {
+                views::session_list::render_session_list(frame, state, chunks[0]);
+            } else if state.show_connection_overlay {
+                views::session_list::render_connection_overlay(frame, state, chunks[0]);
+            }
+        }
         View::Sftp => views::sftp::render_state(frame, state, chunks[0]),
         View::Tunnels => views::tunnels::render_state(frame, state, chunks[0]),
         View::Keys => views::keys::render_state(frame, state, chunks[0]),
@@ -128,7 +136,13 @@ fn render_status_bar_state(frame: &mut Frame, state: &RenderState, area: Rect) {
     // Left side: View-specific hints (using dynamic keyboard icon)
     let hints = match state.view {
         View::Connections => format!("{}Enter:Connect  e:Edit  n:New  d:Delete  t:Tunnels  f:SFTP  K:Keys  ?:Help", kb),
-        View::Session => format!("{}Shift+Esc:Back  Ctrl+C:Disconnect", kb),
+        View::Session => {
+            if state.escape_prefix_active {
+                format!("{}Ctrl+B: n:Next p:Prev l:List c:Connect w:Close", kb)
+            } else {
+                format!("{}Ctrl+B:Prefix  Shift+Esc:Back  Shift+F:SFTP", kb)
+            }
+        }
         View::Sftp => format!("{}Tab:Switch  Enter:Open  c:Copy  m:Move  d:Delete  Esc:Back", kb),
         View::Tunnels => format!("{}Enter:Toggle  n:New  d:Delete  Esc:Back", kb),
         View::Keys => format!("{}Enter:View  n:Generate  i:Import  d:Delete  Esc:Back", kb),
