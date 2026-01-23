@@ -422,9 +422,18 @@ impl App {
                 self.status_message = Some(format!("Disconnected: {}", reason));
                 self.channels.remove(&session_id);
                 self.sessions.remove(session_id);
+                // Remove from session order
+                self.session_order.retain(|&id| id != session_id);
+                
                 if self.active_session == Some(session_id) {
-                    self.view = View::Connections;
-                    self.active_session = None;
+                    // Switch to another session if available
+                    if let Some(&next_session) = self.session_order.first() {
+                        self.active_session = Some(next_session);
+                    } else {
+                        // No remaining sessions, go back to connections
+                        self.view = View::Connections;
+                        self.active_session = None;
+                    }
                 }
             }
             AppEvent::Error(msg) => {
