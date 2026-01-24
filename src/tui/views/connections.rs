@@ -22,6 +22,85 @@ pub fn render_state(frame: &mut Frame, state: &RenderState, area: Rect) {
     
     // Details panel
     render_details_panel_state(frame, state, chunks[1]);
+    
+    // Render connecting overlay if connecting
+    if let Some(host_name) = &state.connecting_to_host {
+        render_connecting_overlay(frame, theme, area, host_name, state.connection_start_time);
+    }
+}
+
+/// Render connecting overlay with spinner
+fn render_connecting_overlay(
+    frame: &mut Frame, 
+    theme: &crate::tui::Theme, 
+    area: Rect, 
+    host_name: &str,
+    start_time: Option<std::time::Instant>,
+) {
+    use ratatui::widgets::Clear;
+    
+    // Spinner frames for animation
+    const SPINNER_FRAMES: &[&str] = &["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
+    
+    // Calculate spinner frame based on elapsed time
+    let frame_idx = start_time
+        .map(|t| (t.elapsed().as_millis() / 80) as usize % SPINNER_FRAMES.len())
+        .unwrap_or(0);
+    let spinner = SPINNER_FRAMES[frame_idx];
+    
+    // Calculate elapsed time for display
+    let elapsed = start_time
+        .map(|t| t.elapsed().as_secs())
+        .unwrap_or(0);
+    
+    // Calculate overlay size and position (centered)
+    let width = 50u16.min(area.width.saturating_sub(4));
+    let height = 7u16;
+    let x = area.x + (area.width.saturating_sub(width)) / 2;
+    let y = area.y + (area.height.saturating_sub(height)) / 2;
+    let overlay_area = Rect::new(x, y, width, height);
+    
+    // Clear the area behind the overlay
+    frame.render_widget(Clear, overlay_area);
+    
+    // Create overlay block with border
+    let block = Block::default()
+        .title(Line::from(vec![
+            Span::styled(" ", theme.title()),
+            Span::styled(spinner, Style::default().fg(theme.accent_primary())),
+            Span::styled(" Connecting ", theme.title()),
+        ]))
+        .title_alignment(Alignment::Center)
+        .borders(Borders::ALL)
+        .border_style(Style::default().fg(theme.accent_primary()))
+        .style(Style::default().bg(theme.bg_panel()));
+    
+    let inner = block.inner(overlay_area);
+    frame.render_widget(block, overlay_area);
+    
+    // Content
+    let content = vec![
+        Line::from(""),
+        Line::from(vec![
+            Span::styled("Connecting to ", theme.text()),
+            Span::styled(host_name, Style::default().fg(theme.accent_info()).add_modifier(Modifier::BOLD)),
+            Span::styled("...", theme.text()),
+        ]),
+        Line::from(""),
+        Line::from(vec![
+            Span::styled(format!("Elapsed: {}s", elapsed), theme.text_dim()),
+        ]),
+        Line::from(vec![
+            Span::styled("Press ", theme.text_dim()),
+            Span::styled("Esc", theme.key_hint()),
+            Span::styled(" to cancel", theme.text_dim()),
+        ]),
+    ];
+    
+    let paragraph = Paragraph::new(content)
+        .alignment(Alignment::Center);
+    
+    frame.render_widget(paragraph, inner);
 }
 
 fn render_host_list_state(frame: &mut Frame, state: &RenderState, area: Rect) {

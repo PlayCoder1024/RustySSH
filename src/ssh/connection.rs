@@ -5,7 +5,8 @@ use anyhow::{anyhow, Result};
 use ssh2::Session;
 use std::collections::HashMap;
 use std::io::{Read, Write};
-use std::net::TcpStream;
+use std::net::{TcpStream, ToSocketAddrs};
+use std::time::Duration;
 
 use uuid::Uuid;
 
@@ -64,12 +65,20 @@ impl SshConnection {
         password: Option<&str>,
         passphrase: Option<&str>,
     ) -> Result<Self> {
+        // Connection timeout
+        const CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
+        
         match proxy {
             ProxyConnection::Direct => {
-                // Direct TCP connection
+                // Direct TCP connection with timeout
                 let addr = format!("{}:{}", host.hostname, host.port);
-                let stream = TcpStream::connect(&addr)
-                    .map_err(|e| anyhow!("Failed to connect to {}: {}", addr, e))?;
+                let socket_addr = addr.to_socket_addrs()
+                    .map_err(|e| anyhow!("Failed to resolve {}: {}", addr, e))?
+                    .next()
+                    .ok_or_else(|| anyhow!("No addresses found for {}", addr))?;
+                
+                let stream = TcpStream::connect_timeout(&socket_addr, CONNECT_TIMEOUT)
+                    .map_err(|e| anyhow!("Connection to {} timed out or failed: {}", addr, e))?;
                 
                 stream.set_nonblocking(false)?;
                 
@@ -175,8 +184,8 @@ impl SshConnection {
         let listener = TcpListener::bind("127.0.0.1:0")?;
         let addr = listener.local_addr()?;
         
-        // Connect to it
-        let client = TcpStream::connect(addr)?;
+        // Connect to it (localhost, no timeout needed)
+        let client = TcpStream::connect_timeout(&addr, Duration::from_secs(5))?;
         
         // Accept the connection
         let (server, _) = listener.accept()?;

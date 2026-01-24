@@ -199,3 +199,60 @@ pub fn render_connection_overlay(frame: &mut Frame, state: &RenderState, area: R
     
     frame.render_widget(help, help_area);
 }
+
+/// Render the connecting overlay (shows while connecting to a host)
+pub fn render_connecting_overlay(frame: &mut Frame, state: &RenderState, area: Rect, host_name: &str) {
+    let theme = &state.theme;
+    
+    // Centered modal
+    let modal_width = 40.min(area.width.saturating_sub(4));
+    let modal_height = 7;
+    
+    let modal_area = Rect {
+        x: area.x + (area.width.saturating_sub(modal_width)) / 2,
+        y: area.y + (area.height.saturating_sub(modal_height)) / 2,
+        width: modal_width,
+        height: modal_height,
+    };
+    
+    // Clear the area
+    frame.render_widget(Clear, modal_area);
+    
+    // Create the modal
+    let block = Block::default()
+        .title(" 󰌘 Connecting ")
+        .title_style(theme.title())
+        .borders(Borders::ALL)
+        .border_style(theme.border_focus())
+        .style(Style::default().bg(theme.bg_panel()));
+    
+    let inner = block.inner(modal_area);
+    frame.render_widget(block, modal_area);
+    
+    // Spinner characters
+    let spinner_chars = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
+    let tick = (std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_millis() / 100) as usize;
+    let spinner = spinner_chars[tick % spinner_chars.len()];
+    
+    // Content
+    let content = vec![
+        Line::from(""),
+        Line::from(vec![
+            Span::styled(format!("  {} ", spinner), Style::default().fg(Color::Cyan)),
+            Span::styled("Connecting to:", theme.text()),
+        ]),
+        Line::from(vec![
+            Span::styled(format!("    {}", host_name), theme.text_bright()),
+        ]),
+        Line::from(""),
+        Line::from(vec![
+            Span::styled("  Timeout: 10 seconds", theme.text_dim()),
+        ]),
+    ];
+    
+    let paragraph = ratatui::widgets::Paragraph::new(content);
+    frame.render_widget(paragraph, inner);
+}

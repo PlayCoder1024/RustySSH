@@ -74,6 +74,10 @@ pub struct RenderState {
     pub show_connection_overlay: bool,
     /// Escape prefix active indicator
     pub escape_prefix_active: bool,
+    /// Currently connecting to host (name for loading indicator)
+    pub connecting_to_host: Option<String>,
+    /// When connection started (for spinner animation timing)
+    pub connection_start_time: Option<Instant>,
 }
 
 /// Snapshot of a file pane for rendering
@@ -182,6 +186,16 @@ pub struct App {
     pub session_list_selected: usize,
     /// Connection overlay visible (for Ctrl+B c)
     pub show_connection_overlay: bool,
+    /// Currently connecting to host (name for loading indicator)
+    pub connecting_to_host: Option<String>,
+    /// When connection attempt started (for spinner animation)
+    pub connection_start_time: Option<Instant>,
+    /// Pending connection task handle
+    pending_connection: Option<tokio::task::JoinHandle<Result<(SshConnection, std::collections::HashMap<Uuid, String>), anyhow::Error>>>,
+    /// Host ID currently being connected
+    pending_connection_host_id: Option<Uuid>,
+    /// Hosts to save passwords for after successful connection
+    pending_hosts_to_save: Vec<Uuid>,
 }
 
 impl App {
@@ -221,6 +235,11 @@ impl App {
             session_list_visible: false,
             session_list_selected: 0,
             show_connection_overlay: false,
+            connecting_to_host: None,
+            connection_start_time: None,
+            pending_connection: None,
+            pending_connection_host_id: None,
+            pending_hosts_to_save: Vec::new(),
         })
     }
 
@@ -343,6 +362,8 @@ impl App {
                 session_list_selected: self.session_list_selected,
                 show_connection_overlay: self.show_connection_overlay,
                 escape_prefix_active: self.escape_prefix_active,
+                connecting_to_host: self.connecting_to_host.clone(),
+                connection_start_time: self.connection_start_time,
             };
 
             // Render UI
@@ -442,8 +463,57 @@ impl App {
             AppEvent::Mouse(mouse) => {
                 self.handle_mouse(mouse).await?;
             }
-            AppEvent::Tick | AppEvent::SftpProgress { .. } => {
-                // Tick and SFTP events are handled elsewhere or ignored
+            AppEvent::Tick => {
+                // Poll pending connection if any
+                if let Some(handle) = &mut self.pending_connection {
+                    if handle.is_finished() {
+                        // Take ownership of the handle by replacing with None
+                        let handle = self.pending_connection.take().unwrap();
+                        let host_id = self.pending_connection_host_id.take();
+                        let host_name = self.connecting_to_host.take().unwrap_or_default();
+                        let hosts_to_save = std::mem::take(&mut self.pending_hosts_to_save);
+                        self.connection_start_time = None;
+                        
+                        // Get the result
+                        match handle.await {
+                            Ok(Ok((connection, passwords_used))) => {
+                                // Connection successful - handle it
+                                self.handle_connection_success(
+                                    host_id.unwrap_or_default(),
+                                    host_name,
+                                    connection,
+                                    passwords_used,
+                                    hosts_to_save,
+                                ).await?;
+                            }
+                            Ok(Err(e)) => {
+                                // Connection failed
+                                self.handle_connection_failure(
+                                    &e.to_string(),
+                                    hosts_to_save,
+                                ).await;
+                            }
+                            Err(e) => {
+                                // Task panicked or cancelled
+                                self.status_message = Some(format!("Connection cancelled: {}", e));
+                            }
+                        }
+                    }
+                }
+            }
+            AppEvent::SftpProgress { .. } => {
+                // SFTP progress events handled elsewhere
+            }
+            AppEvent::ConnectionResult { host_id: _, host_name, result } => {
+                // Legacy event - kept for compatibility
+                match result {
+                    Ok(_data) => {
+                        self.status_message = Some(format!("Connected to {}", host_name));
+                    }
+                    Err(e) => {
+                        self.status_message = Some(format!("Connection failed: {}", e));
+                    }
+                }
             }
         }
         Ok(())
@@ -563,6 +633,20 @@ impl App {
             KeyCode::Char('d') => {
                 // Delete selected host
                 self.delete_selected_host().await?;
+            }
+            KeyCode::Esc => {
+                // Cancel pending connection if any
+                if self.pending_connection.is_some() {
+                    // Abort the pending connection
+                    if let Some(handle) = self.pending_connection.take() {
+                        handle.abort();
+                    }
+                    self.connecting_to_host = None;
+                    self.connection_start_time = None;
+                    self.pending_connection_host_id = None;
+                    self.pending_hosts_to_save.clear();
+                    self.status_message = Some("Connection cancelled".to_string());
+                }
             }
             _ => {}
         }
@@ -716,8 +800,8 @@ impl App {
         // Get terminal size
         // Account for: status bar (2 lines), tab bar (2 lines), terminal block borders (2 lines top+bottom, 2 cols left+right)
         let size = self.tui.size()?;
-        let cols = size.width.saturating_sub(2) as u32; // Subtract block borders (left + right)
-        let rows = size.height.saturating_sub(6) as u32; // Subtract: status bar (2) + tab bar (2) + block borders (2)
+        let _cols = size.width.saturating_sub(2) as u32; // Subtract block borders (left + right)
+        let _rows = size.height.saturating_sub(6) as u32; // Subtract: status bar (2) + tab bar (2) + block borders (2)
 
         // Clone host name for later use
         let host_name = host.name.clone();
@@ -922,8 +1006,14 @@ impl App {
             }
         }
 
-        // Perform connection in blocking context
-        let connection_result = tokio::task::spawn_blocking(move || {
+        // Set connecting state for UI feedback
+        self.connecting_to_host = Some(host_name.clone());
+        self.connection_start_time = Some(Instant::now());
+        self.pending_connection_host_id = Some(host_id);
+        self.pending_hosts_to_save = hosts_to_save;
+
+        // Spawn connection in background (non-blocking)
+        let handle = tokio::task::spawn_blocking(move || {
             // Connect through the proxy chain
             let mut prev_connection: Option<SshConnection> = None;
             
@@ -954,89 +1044,108 @@ impl App {
             }
             
             Err(anyhow::anyhow!("Empty proxy chain"))
-        })
-        .await?;
+        });
 
-        match connection_result {
-            Ok((mut connection, passwords_used)) => {
-                let connection_id = connection.id;
+        // Store handle - will be polled in Tick handler
+        self.pending_connection = Some(handle);
 
-                // Save passwords for hosts that were newly entered (not from vault) and have remember_password
-                for host_to_save_id in &hosts_to_save {
-                    if let Some(pwd) = passwords_used.get(host_to_save_id) {
-                        // Ensure master password is unlocked (should already be)
-                        if self.credentials.is_unlocked() {
-                            if let Err(e) = self.credentials.save_password(*host_to_save_id, pwd).await {
-                                // Log but don't fail connection
-                                tracing::warn!("Failed to save password: {}", e);
-                            }
-                        }
-                    }
-                }
+        Ok(())
+    }
 
-                // Open shell channel
-                match connection.open_shell(cols, rows) {
-                    Ok(channel) => {
-                        // Create session for terminal emulation (use same size as PTY)
-                        let session_id = self.sessions.create_session(
-                            host_id,
-                            host_name.clone(),
-                            cols as u16,
-                            rows as u16,
-                        );
+    /// Handle successful connection (called from Tick when connection completes)
+    async fn handle_connection_success(
+        &mut self,
+        host_id: Uuid,
+        host_name: String,
+        mut connection: SshConnection,
+        passwords_used: std::collections::HashMap<Uuid, String>,
+        hosts_to_save: Vec<Uuid>,
+    ) -> Result<()> {
+        let connection_id = connection.id;
 
-                        // Set up channel I/O
-                        let (input_tx, input_rx) = mpsc::unbounded_channel::<Vec<u8>>();
+        // Get terminal size
+        let size = self.tui.size()?;
+        let cols = size.width.saturating_sub(2) as u32;
+        let rows = size.height.saturating_sub(6) as u32;
 
-                        // Store channel info
-                        self.channels.insert(
-                            session_id,
-                            ActiveChannel {
-                                session_id,
-                                connection_id,
-                                input_tx,
-                            },
-                        );
-
-                        // Store connection
-                        self.connections.add(connection);
-
-                        // Spawn task to handle channel I/O
-                        let event_sender = self.events.sender();
-                        tokio::task::spawn_blocking(move || {
-                            Self::handle_channel_io(channel, session_id, event_sender, input_rx);
-                        });
-
-                        // Switch to session view
-                        self.active_session = Some(session_id);
-                        self.session_order.push(session_id);
-                        self.view = View::Session;
-                        self.status_message = Some(format!("Connected to {}", host_name));
-                        
-                        // Store password for SFTP reuse (if password was used)
-                        if let Some(pwd) = passwords_used.get(&host_id) {
-                            self.session_passwords.insert(host_id, pwd.clone());
-                        }
-                    }
-                    Err(e) => {
-                        self.status_message = Some(format!("Failed to open shell: {}", e));
+        // Save passwords for hosts that were newly entered
+        for host_to_save_id in &hosts_to_save {
+            if let Some(pwd) = passwords_used.get(host_to_save_id) {
+                if self.credentials.is_unlocked() {
+                    if let Err(e) = self.credentials.save_password(*host_to_save_id, pwd).await {
+                        tracing::warn!("Failed to save password: {}", e);
                     }
                 }
             }
-            Err(e) => {
-                // Connection failed - if we used saved passwords, clear them
-                for host_to_save_id in &hosts_to_save {
-                    if self.credentials.has_saved_password(*host_to_save_id) {
-                        if let Err(del_err) = self.credentials.delete_password(*host_to_save_id).await {
-                            tracing::warn!("Failed to delete invalid password: {}", del_err);
-                        }
-                    }
+        }
+
+        // Open shell channel
+        match connection.open_shell(cols, rows) {
+            Ok(channel) => {
+                // Create session for terminal emulation
+                let session_id = self.sessions.create_session(
+                    host_id,
+                    host_name.clone(),
+                    cols as u16,
+                    rows as u16,
+                );
+
+                // Set up channel I/O
+                let (input_tx, input_rx) = mpsc::unbounded_channel::<Vec<u8>>();
+
+                // Store channel info
+                self.channels.insert(
+                    session_id,
+                    ActiveChannel {
+                        session_id,
+                        connection_id,
+                        input_tx,
+                    },
+                );
+
+                // Store connection
+                self.connections.add(connection);
+
+                // Spawn task to handle channel I/O
+                let event_sender = self.events.sender();
+                tokio::task::spawn_blocking(move || {
+                    Self::handle_channel_io(channel, session_id, event_sender, input_rx);
+                });
+
+                // Switch to session view
+                self.active_session = Some(session_id);
+                self.session_order.push(session_id);
+                self.view = View::Session;
+                self.status_message = Some(format!("Connected to {}", host_name));
+                
+                // Store password for SFTP reuse
+                if let Some(pwd) = passwords_used.get(&host_id) {
+                    self.session_passwords.insert(host_id, pwd.clone());
                 }
-                self.status_message = Some(format!("Connection failed: {}", e));
+            }
+            Err(e) => {
+                self.status_message = Some(format!("Failed to open shell: {}", e));
             }
         }
 
         Ok(())
+    }
+
+    /// Handle connection failure (called from Tick when connection fails)
+    async fn handle_connection_failure(
+        &mut self,
+        error_msg: &str,
+        hosts_to_save: Vec<Uuid>,
+    ) {
+        // Connection failed - if we used saved passwords, clear them
+        for host_to_save_id in &hosts_to_save {
+            if self.credentials.has_saved_password(*host_to_save_id) {
+                if let Err(del_err) = self.credentials.delete_password(*host_to_save_id).await {
+                    tracing::warn!("Failed to delete invalid password: {}", del_err);
+                }
+            }
+        }
+        self.status_message = Some(format!("Connection failed: {}", error_msg));
     }
 
     /// Open SFTP session for a host, creating a new SSH connection for SFTP

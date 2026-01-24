@@ -25,6 +25,19 @@ pub enum AppEvent {
     SftpProgress { transfer_id: uuid::Uuid, bytes: u64, total: u64 },
     /// Error notification
     Error(String),
+    /// Connection attempt completed (success or failure)
+    ConnectionResult {
+        host_id: uuid::Uuid,
+        host_name: String,
+        result: Result<ConnectionResultData, String>,
+    },
+}
+
+/// Data for a successful connection
+#[derive(Debug, Clone)]
+pub struct ConnectionResultData {
+    pub connection_id: uuid::Uuid,
+    pub passwords_used: std::collections::HashMap<uuid::Uuid, String>,
 }
 
 /// Event handler for terminal and application events
