@@ -43,7 +43,7 @@ async fn test_connection_to_invalid_host() {
         username: "user".to_string(),
         auth: AuthMethod::Password,
         tags: vec![],
-        jump_host: None,
+        proxy: None,
         notes: String::new(),
         tunnels: vec![],
         startup_commands: vec![],

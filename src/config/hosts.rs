@@ -43,6 +43,60 @@ impl<'de> Deserialize<'de> for JumpHostRef {
     }
 }
 
+/// Proxy configuration for reaching a host through various proxy mechanisms
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(tag = "type", rename_all = "snake_case")]
+pub enum ProxyConfig {
+    /// Jump host (SSH ProxyJump) - tunnel through another SSH host
+    JumpHost {
+        /// Reference to the jump host (UUID, hostname, or connection name)
+        host: JumpHostRef,
+    },
+    /// SOCKS5 proxy (RFC 1928)
+    Socks5 {
+        /// Proxy server address
+        address: String,
+        /// Proxy server port
+        port: u16,
+        /// Optional username for authentication
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        username: Option<String>,
+        /// Optional password for authentication
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        password: Option<String>,
+    },
+    /// SOCKS4 proxy
+    Socks4 {
+        /// Proxy server address
+        address: String,
+        /// Proxy server port
+        port: u16,
+        /// Optional user ID
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        user_id: Option<String>,
+    },
+    /// HTTP CONNECT proxy
+    Http {
+        /// Proxy server address
+        address: String,
+        /// Proxy server port
+        port: u16,
+        /// Optional username for Basic authentication
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        username: Option<String>,
+        /// Optional password for Basic authentication
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        password: Option<String>,
+    },
+    /// Custom proxy command (like OpenSSH ProxyCommand)
+    /// The command is executed and stdin/stdout are used as the connection
+    /// Supports %h (hostname) and %p (port) substitutions
+    ProxyCommand {
+        /// Command to execute (e.g., "nc %h %p" or "ncat --proxy proxy:8080 %h %p")
+        command: String,
+    },
+}
+
 /// SSH host configuration
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct HostConfig {
@@ -61,8 +115,9 @@ pub struct HostConfig {
     /// Authentication method
     #[serde(default)]
     pub auth: AuthMethod,
-    /// Jump host (ProxyJump) - can be UUID, hostname, or connection name
-    pub jump_host: Option<JumpHostRef>,
+    /// Proxy configuration (jump host, SOCKS, HTTP, or custom command)
+    #[serde(default)]
+    pub proxy: Option<ProxyConfig>,
     /// Tags for organization
     #[serde(default)]
     pub tags: Vec<String>,
@@ -98,7 +153,7 @@ impl Default for HostConfig {
             port: 22,
             username: whoami::username(),
             auth: AuthMethod::default(),
-            jump_host: None,
+            proxy: None,
             tags: vec![],
             tunnels: vec![],
             startup_commands: vec![],

@@ -82,19 +82,19 @@ fn test_startup_commands() {
 /// Test jump host reference configuration (no server needed)
 #[test]
 fn test_jump_host_ref() {
-    use rustyssh::config::{HostConfig, JumpHostRef};
+    use rustyssh::config::{HostConfig, JumpHostRef, ProxyConfig};
     use uuid::Uuid;
 
     // Create a jump host reference by hostname
     let jump_ref = JumpHostRef::ByHostname("bastion.example.com".to_string());
     
     let mut host = HostConfig::new("internal-server", "10.0.0.1", "admin");
-    host.jump_host = Some(jump_ref);
+    host.proxy = Some(ProxyConfig::JumpHost { host: jump_ref });
 
-    assert!(host.jump_host.is_some());
-    match host.jump_host.as_ref().unwrap() {
-        JumpHostRef::ByHostname(h) => assert_eq!(h, "bastion.example.com"),
-        _ => panic!("Expected ByHostname variant"),
+    assert!(host.proxy.is_some());
+    match host.proxy.as_ref().unwrap() {
+        ProxyConfig::JumpHost { host: JumpHostRef::ByHostname(h) } => assert_eq!(h, "bastion.example.com"),
+        _ => panic!("Expected JumpHost with ByHostname variant"),
     }
 
     // Test by UUID

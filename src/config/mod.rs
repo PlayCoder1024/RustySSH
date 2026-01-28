@@ -3,7 +3,7 @@
 mod hosts;
 mod settings;
 
-pub use hosts::{AuthMethod, HostConfig, HostGroup, JumpHostRef};
+pub use hosts::{AuthMethod, HostConfig, HostGroup, JumpHostRef, ProxyConfig};
 pub use settings::Settings;
 
 use anyhow::Result;
@@ -125,6 +125,7 @@ impl Config {
     /// Resolve the full proxy chain for a host
     /// Returns hosts in connection order: [jump_host_1, jump_host_2, ..., target]
     /// Each jump host may itself have a jump host, forming a chain
+    /// Note: Only JumpHost proxies form chains; other proxy types connect directly
     pub fn resolve_proxy_chain(&self, host: &HostConfig) -> Vec<HostConfig> {
         let mut chain = Vec::new();
         
@@ -132,7 +133,8 @@ impl Config {
         let mut jump_hosts = Vec::new();
         let mut current = host;
         
-        while let Some(ref jump_ref) = current.jump_host {
+        // Only follow the chain for JumpHost proxy types
+        while let Some(ProxyConfig::JumpHost { host: ref jump_ref }) = current.proxy {
             if let Some(jump_host) = self.resolve_jump_host(jump_ref) {
                 // Check for circular reference
                 if jump_hosts.iter().any(|h: &HostConfig| h.id == jump_host.id) {

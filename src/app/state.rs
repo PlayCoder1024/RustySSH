@@ -1014,6 +1014,8 @@ impl App {
 
         // Spawn connection in background (non-blocking)
         let handle = tokio::task::spawn_blocking(move || {
+            use crate::config::ProxyConfig;
+            
             // Connect through the proxy chain
             let mut prev_connection: Option<SshConnection> = None;
             
@@ -1021,11 +1023,56 @@ impl App {
                 let is_last = i == proxy_chain.len() - 1;
                 let password = passwords.get(&chain_host.id).map(|s| s.as_str());
                 
+                // Determine the proxy connection type
                 let proxy = if let Some(conn) = prev_connection.take() {
+                    // We have a previous connection from jump host chain - tunnel through it
                     ProxyConnection::JumpHost {
                         connection: Box::new(conn),
                     }
+                } else if is_last {
+                    // For the final host, check if it has a non-JumpHost proxy config
+                    match &chain_host.proxy {
+                        Some(ProxyConfig::Socks5 { address, port, username, password: proxy_pwd }) => {
+                            ProxyConnection::Socks5 {
+                                address: address.clone(),
+                                port: *port,
+                                auth: match (username, proxy_pwd) {
+                                    (Some(u), Some(p)) => Some((u.clone(), p.clone())),
+                                    _ => None,
+                                },
+                            }
+                        }
+                        Some(ProxyConfig::Socks4 { address, port, user_id }) => {
+                            ProxyConnection::Socks4 {
+                                address: address.clone(),
+                                port: *port,
+                                user_id: user_id.clone(),
+                            }
+                        }
+                        Some(ProxyConfig::Http { address, port, username, password: proxy_pwd }) => {
+                            ProxyConnection::HttpConnect {
+                                address: address.clone(),
+                                port: *port,
+                                auth: match (username, proxy_pwd) {
+                                    (Some(u), Some(p)) => Some((u.clone(), p.clone())),
+                                    _ => None,
+                                },
+                            }
+                        }
+                        Some(ProxyConfig::ProxyCommand { command }) => {
+                            ProxyConnection::ProxyCommand {
+                                command: command.clone(),
+                                target_host: chain_host.hostname.clone(),
+                                target_port: chain_host.port,
+                            }
+                        }
+                        // JumpHost is already handled via proxy_chain, None means direct
+                        Some(ProxyConfig::JumpHost { .. }) | None => {
+                            ProxyConnection::Direct
+                        }
+                    }
                 } else {
+                    // Intermediate jump hosts - connect directly (they're part of the chain)
                     ProxyConnection::Direct
                 };
                 
@@ -1240,6 +1287,8 @@ impl App {
         
         let username = host.username.clone();
         let sftp_result = tokio::task::spawn_blocking(move || {
+            use crate::config::ProxyConfig;
+            
             // Connect through the proxy chain (same logic as connect_to_host)
             let mut prev_connection: Option<SshConnection> = None;
             
@@ -1247,9 +1296,51 @@ impl App {
                 let is_last = i == proxy_chain.len() - 1;
                 let password = passwords.get(&chain_host.id).map(|s| s.as_str());
                 
+                // Determine the proxy connection type (same logic as connect_to_host)
                 let proxy = if let Some(conn) = prev_connection.take() {
                     ProxyConnection::JumpHost {
                         connection: Box::new(conn),
+                    }
+                } else if is_last {
+                    // For the final host, check if it has a non-JumpHost proxy config
+                    match &chain_host.proxy {
+                        Some(ProxyConfig::Socks5 { address, port, username, password: proxy_pwd }) => {
+                            ProxyConnection::Socks5 {
+                                address: address.clone(),
+                                port: *port,
+                                auth: match (username, proxy_pwd) {
+                                    (Some(u), Some(p)) => Some((u.clone(), p.clone())),
+                                    _ => None,
+                                },
+                            }
+                        }
+                        Some(ProxyConfig::Socks4 { address, port, user_id }) => {
+                            ProxyConnection::Socks4 {
+                                address: address.clone(),
+                                port: *port,
+                                user_id: user_id.clone(),
+                            }
+                        }
+                        Some(ProxyConfig::Http { address, port, username, password: proxy_pwd }) => {
+                            ProxyConnection::HttpConnect {
+                                address: address.clone(),
+                                port: *port,
+                                auth: match (username, proxy_pwd) {
+                                    (Some(u), Some(p)) => Some((u.clone(), p.clone())),
+                                    _ => None,
+                                },
+                            }
+                        }
+                        Some(ProxyConfig::ProxyCommand { command }) => {
+                            ProxyConnection::ProxyCommand {
+                                command: command.clone(),
+                                target_host: chain_host.hostname.clone(),
+                                target_port: chain_host.port,
+                            }
+                        }
+                        Some(ProxyConfig::JumpHost { .. }) | None => {
+                            ProxyConnection::Direct
+                        }
                     }
                 } else {
                     ProxyConnection::Direct
