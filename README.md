@@ -8,6 +8,10 @@
 
 RustySSH is a terminal-based SSH connection manager with a beautiful, btop-inspired interface. Manage your SSH connections, tunnels, and keys all from one elegant TUI application.
 
+> [!IMPORTANT]
+> This project is **totally vibecoding**. Every line of code is driven by LLM.
+
+
 ## ✨ Features
 
 - **🖥️ Beautiful TUI** - Dark theme with Tokyo Night colors, responsive layout
