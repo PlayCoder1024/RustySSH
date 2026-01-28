@@ -184,8 +184,105 @@ pub fn render_screen_to_lines(screen: &vt100::Screen) -> Vec<Line<'static>> {
             }
         }
 
-        lines.push(Line::from(spans));
+    lines.push(Line::from(spans));
     }
 
+    lines
+}
+
+/// Render a vt100 screen to styled ratatui Lines with selection highlighting
+pub fn render_screen_to_lines_with_selection(
+    screen: &vt100::Screen,
+    selection: Option<((u16, u16), (u16, u16))>,
+) -> Vec<Line<'static>> {
+    // Fast path: if no selection, use the fast rendering function
+    if selection.is_none() {
+        return render_screen_to_lines(screen);
+    }
+    
+    // Get selection bounds
+    let ((start_row, start_col), (end_row, end_col)) = selection.unwrap();
+    
+    // First render all lines normally (fast path)
+    let mut lines = render_screen_to_lines(screen);
+    let (rows, cols) = screen.size();
+    
+    // Now overlay selection highlighting only on affected rows
+    // This is much faster than processing every cell
+    for row in start_row..=end_row.min(rows - 1) {
+        let row_idx = row as usize;
+        if row_idx >= lines.len() {
+            continue;
+        }
+        
+        // Determine selection range for this row
+        let (sel_start, sel_end) = if start_row == end_row {
+            // Single line selection
+            (start_col, end_col)
+        } else if row == start_row {
+            // First line: from start_col to end of line
+            (start_col, cols - 1)
+        } else if row == end_row {
+            // Last line: from start to end_col
+            (0, end_col)
+        } else {
+            // Middle lines: entire row selected
+            (0, cols - 1)
+        };
+        
+        // Get the raw content from vt100 for this row
+        let mut new_spans: Vec<Span<'static>> = Vec::new();
+        let mut current_col = 0u16;
+        
+        for span in lines[row_idx].spans.iter() {
+            let content = span.content.to_string();
+            let span_len = content.chars().count() as u16;
+            let span_end = current_col + span_len;
+            
+            // Check if this span overlaps with selection
+            if span_end <= sel_start || current_col > sel_end {
+                // No overlap, keep span as-is
+                new_spans.push(span.clone());
+            } else if current_col >= sel_start && span_end <= sel_end + 1 {
+                // Entire span is selected
+                let style = span.style.add_modifier(ratatui::style::Modifier::REVERSED);
+                new_spans.push(Span::styled(content, style));
+            } else {
+                // Partial overlap - split the span
+                let chars: Vec<char> = content.chars().collect();
+                let mut i = 0u16;
+                
+                while i < span_len {
+                    let abs_col = current_col + i;
+                    let is_selected = abs_col >= sel_start && abs_col <= sel_end;
+                    
+                    // Find the end of the current segment
+                    let mut seg_end = i + 1;
+                    while seg_end < span_len {
+                        let next_col = current_col + seg_end;
+                        let next_selected = next_col >= sel_start && next_col <= sel_end;
+                        if next_selected != is_selected {
+                            break;
+                        }
+                        seg_end += 1;
+                    }
+                    
+                    let segment: String = chars[i as usize..seg_end as usize].iter().collect();
+                    let style = if is_selected {
+                        span.style.add_modifier(ratatui::style::Modifier::REVERSED)
+                    } else {
+                        span.style
+                    };
+                    new_spans.push(Span::styled(segment, style));
+                    i = seg_end;
+                }
+            }
+            
+            current_col = span_end;
+        }
+        
+        lines[row_idx] = Line::from(new_spans);
+    }
+    
     lines
 }

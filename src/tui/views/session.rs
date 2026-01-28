@@ -5,7 +5,8 @@ use ratatui::prelude::*;
 use ratatui::widgets::{Block, Borders, Paragraph, Tabs};
 
 /// Render the session view with RenderState
-pub fn render_state(frame: &mut Frame, state: &RenderState, area: Rect) {
+/// Returns the terminal content area for mouse coordinate conversion
+pub fn render_state(frame: &mut Frame, state: &RenderState, area: Rect) -> Option<Rect> {
     let theme = &state.theme;
 
     if state.sessions.is_empty() {
@@ -24,7 +25,7 @@ pub fn render_state(frame: &mut Frame, state: &RenderState, area: Rect) {
         ];
         let paragraph = Paragraph::new(text);
         frame.render_widget(paragraph, inner);
-        return;
+        return None;
     }
 
     // Layout: tabs + terminal
@@ -84,7 +85,7 @@ pub fn render_state(frame: &mut Frame, state: &RenderState, area: Rect) {
             let paragraph = Paragraph::new(lines);
             frame.render_widget(paragraph, inner);
 
-            if session.cursor_visible {
+            if session.cursor_visible && !state.find_overlay_visible {
                 let (cursor_row, cursor_col) = session.cursor_position;
                 let cursor_x = inner.x + cursor_col;
                 let cursor_y = inner.y + cursor_row;
@@ -95,6 +96,21 @@ pub fn render_state(frame: &mut Frame, state: &RenderState, area: Rect) {
             }
         }
     }
+
+    // Render find overlay if visible
+    if state.find_overlay_visible {
+        use crate::tui::widgets::render_find_overlay;
+        render_find_overlay(
+            frame,
+            area,
+            &state.find_query,
+            state.find_match_index,
+            state.find_match_count,
+            theme,
+        );
+    }
+
+    Some(inner)
 }
 
 /// Render the session view

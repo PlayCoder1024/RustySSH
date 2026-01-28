@@ -46,6 +46,8 @@ pub struct SessionInfo {
     pub styled_lines: Vec<ratatui::text::Line<'static>>,
     pub cursor_position: (u16, u16),
     pub cursor_visible: bool,
+    /// Selection state for rendering (normalized start/end positions)
+    pub selection: Option<((u16, u16), (u16, u16))>,
 }
 
 /// Render state snapshot (avoids borrow conflicts in draw callback)
@@ -78,6 +80,14 @@ pub struct RenderState {
     pub connecting_to_host: Option<String>,
     /// When connection started (for spinner animation timing)
     pub connection_start_time: Option<Instant>,
+    /// Find overlay visible
+    pub find_overlay_visible: bool,
+    /// Find search query
+    pub find_query: String,
+    /// Current find match index
+    pub find_match_index: usize,
+    /// Total find matches count
+    pub find_match_count: usize,
 }
 
 /// Snapshot of a file pane for rendering
@@ -196,6 +206,16 @@ pub struct App {
     pending_connection_host_id: Option<Uuid>,
     /// Hosts to save passwords for after successful connection
     pending_hosts_to_save: Vec<Uuid>,
+    /// Find overlay visible in session view
+    pub find_overlay_visible: bool,
+    /// Find search query
+    pub find_query: String,
+    /// Current find match index (0-based)
+    pub find_match_index: usize,
+    /// Find matches positions (row, start_col, end_col)
+    pub find_matches: Vec<(u16, u16, u16)>,
+    /// Terminal content area (for mouse coordinate conversion)
+    pub terminal_area: Option<ratatui::layout::Rect>,
 }
 
 impl App {
@@ -240,6 +260,11 @@ impl App {
             pending_connection: None,
             pending_connection_host_id: None,
             pending_hosts_to_save: Vec::new(),
+            find_overlay_visible: false,
+            find_query: String::new(),
+            find_match_index: 0,
+            find_matches: Vec::new(),
+            terminal_area: None,
         })
     }
 
@@ -292,12 +317,14 @@ impl App {
                 icons: self.icons.clone(),
                 config: self.config.clone(),
                 sessions: {
+                    use crate::tui::terminal_render::render_screen_to_lines_with_selection;
                     let highlight_config = TerminalHighlightConfig::default();
                     self.sessions
                         .list()
                         .iter()
                         .map(|s| {
-                            let raw_lines = render_screen_to_lines(s.screen());
+                            let selection = s.get_selection_for_render();
+                            let raw_lines = render_screen_to_lines_with_selection(s.screen(), selection);
                             SessionInfo {
                                 id: s.id,
                                 name: s.name.clone(),
@@ -307,6 +334,7 @@ impl App {
                                     .collect(),
                                 cursor_position: s.cursor_position(),
                                 cursor_visible: s.cursor_visible(),
+                                selection,
                             }
                         })
                         .collect()
@@ -364,12 +392,49 @@ impl App {
                 escape_prefix_active: self.escape_prefix_active,
                 connecting_to_host: self.connecting_to_host.clone(),
                 connection_start_time: self.connection_start_time,
+                find_overlay_visible: self.find_overlay_visible,
+                find_query: self.find_query.clone(),
+                find_match_index: self.find_match_index,
+                find_match_count: self.find_matches.len(),
             };
 
             // Render UI
             self.tui.draw(|frame| {
                 crate::tui::ui::render_with_state(frame, &render_state);
             })?;
+
+            // Compute terminal area for mouse coordinate conversion
+            // This mirrors the layout logic in render_with_state
+            if self.view == View::Session {
+                let size = self.tui.size()?;
+                let chunks = ratatui::layout::Layout::default()
+                    .direction(ratatui::layout::Direction::Vertical)
+                    .constraints([
+                        ratatui::layout::Constraint::Min(3),    // Main content
+                        ratatui::layout::Constraint::Length(1), // Status bar
+                    ])
+                    .split(size);
+                
+                // Session view layout: tabs + terminal
+                let session_chunks = ratatui::layout::Layout::default()
+                    .direction(ratatui::layout::Direction::Vertical)
+                    .constraints([
+                        ratatui::layout::Constraint::Length(2), // Tabs
+                        ratatui::layout::Constraint::Min(1),    // Terminal
+                    ])
+                    .split(chunks[0]);
+                
+                // Terminal block inner area (accounting for borders)
+                let terminal_inner = ratatui::layout::Rect {
+                    x: session_chunks[1].x + 1,
+                    y: session_chunks[1].y + 1,
+                    width: session_chunks[1].width.saturating_sub(2),
+                    height: session_chunks[1].height.saturating_sub(2),
+                };
+                self.terminal_area = Some(terminal_inner);
+            } else {
+                self.terminal_area = None;
+            }
 
             // Handle events
             if let Some(event) = self.events.next().await {
@@ -385,6 +450,45 @@ impl App {
     async fn handle_event(&mut self, event: AppEvent) -> Result<()> {
         match event {
             AppEvent::Key(key) => {
+                // Handle Ctrl+Shift combinations first (copy/paste in session)
+                if self.view == View::Session 
+                    && key.modifiers.contains(KeyModifiers::CONTROL) 
+                    && key.modifiers.contains(KeyModifiers::SHIFT) 
+                {
+                    match key.code {
+                        KeyCode::Char('C') | KeyCode::Char('c') => {
+                            // Copy selected text to clipboard
+                            self.copy_selection_to_clipboard();
+                            return Ok(());
+                        }
+                        KeyCode::Char('V') | KeyCode::Char('v') => {
+                            // Paste from clipboard
+                            self.paste_from_clipboard().await;
+                            return Ok(());
+                        }
+                        _ => {}
+                    }
+                }
+                
+                // Handle Ctrl+F for find (in session view)
+                if self.view == View::Session 
+                    && key.modifiers.contains(KeyModifiers::CONTROL) 
+                    && !key.modifiers.contains(KeyModifiers::SHIFT)
+                    && key.code == KeyCode::Char('f')
+                {
+                    self.find_overlay_visible = true;
+                    self.find_query.clear();
+                    self.find_matches.clear();
+                    self.find_match_index = 0;
+                    return Ok(());
+                }
+                
+                // Handle find overlay input
+                if self.view == View::Session && self.find_overlay_visible {
+                    self.handle_find_overlay_key(key).await?;
+                    return Ok(());
+                }
+                
                 // Handle Ctrl+C/Q - only quit from non-session views
                 // In session view, forward Ctrl+C to remote server
                 if key.modifiers.contains(KeyModifiers::CONTROL) {
@@ -534,11 +638,62 @@ impl App {
         Ok(())
     }
 
-    /// Handle mouse events for scrolling
+    /// Handle mouse events for scrolling and selection
     async fn handle_mouse(&mut self, mouse: MouseEvent) -> Result<()> {
+        use crossterm::event::MouseButton;
         use MouseEventKind::*;
         
         match mouse.kind {
+            // Mouse button down - start selection
+            Down(MouseButton::Left) => {
+                if self.view == View::Session {
+                    if let Some(area) = self.terminal_area {
+                        // Convert mouse coordinates to terminal cell position
+                        let term_row = mouse.row.saturating_sub(area.y);
+                        let term_col = mouse.column.saturating_sub(area.x);
+                        
+                        // Only start selection if within terminal bounds
+                        if mouse.row >= area.y && mouse.row < area.y + area.height
+                            && mouse.column >= area.x && mouse.column < area.x + area.width
+                        {
+                            if let Some(session_id) = self.active_session {
+                                if let Some(session) = self.sessions.get_mut(session_id) {
+                                    session.start_selection(term_row, term_col);
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+            // Mouse drag - update selection
+            Drag(MouseButton::Left) => {
+                if self.view == View::Session {
+                    if let Some(area) = self.terminal_area {
+                        // Convert mouse coordinates to terminal cell position
+                        // Clamp to valid bounds
+                        let term_row = mouse.row.saturating_sub(area.y).min(area.height.saturating_sub(1));
+                        let term_col = mouse.column.saturating_sub(area.x).min(area.width.saturating_sub(1));
+                        
+                        if let Some(session_id) = self.active_session {
+                            if let Some(session) = self.sessions.get_mut(session_id) {
+                                if session.is_selecting {
+                                    session.update_selection(term_row, term_col);
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+            // Mouse button up - finish selection
+            Up(MouseButton::Left) => {
+                if self.view == View::Session {
+                    if let Some(session_id) = self.active_session {
+                        if let Some(session) = self.sessions.get_mut(session_id) {
+                            session.finish_selection();
+                        }
+                    }
+                }
+            }
             ScrollUp => {
                 match self.view {
                     View::Connections => {
@@ -2182,4 +2337,158 @@ impl App {
             _ => vec![],
         }
     }
+
+    /// Copy selected text to clipboard
+    fn copy_selection_to_clipboard(&mut self) {
+        if let Some(session_id) = self.active_session {
+            if let Some(session) = self.sessions.get(session_id) {
+                if let Some(text) = session.get_selected_text() {
+                    match arboard::Clipboard::new() {
+                        Ok(mut clipboard) => {
+                            match clipboard.set_text(&text) {
+                                Ok(_) => {
+                                    self.status_message = Some(format!("Copied {} chars", text.len()));
+                                }
+                                Err(e) => {
+                                    self.status_message = Some(format!("Copy failed: {}", e));
+                                }
+                            }
+                        }
+                        Err(e) => {
+                            self.status_message = Some(format!("Clipboard error: {}", e));
+                        }
+                    }
+                } else {
+                    self.status_message = Some("No text selected".to_string());
+                }
+            }
+        }
+    }
+
+    /// Paste from clipboard to terminal
+    async fn paste_from_clipboard(&mut self) {
+        match arboard::Clipboard::new() {
+            Ok(mut clipboard) => {
+                match clipboard.get_text() {
+                    Ok(text) => {
+                        if !text.is_empty() {
+                            // Send pasted text to the active session
+                            if let Some(session_id) = self.active_session {
+                                if let Some(channel) = self.channels.get(&session_id) {
+                                    let _ = channel.input_tx.send(text.into_bytes());
+                                }
+                            }
+                        }
+                    }
+                    Err(e) => {
+                        self.status_message = Some(format!("Paste failed: {}", e));
+                    }
+                }
+            }
+            Err(e) => {
+                self.status_message = Some(format!("Clipboard error: {}", e));
+            }
+        }
+    }
+
+    /// Handle keyboard input in find overlay
+    async fn handle_find_overlay_key(&mut self, key: crossterm::event::KeyEvent) -> Result<()> {
+        match key.code {
+            KeyCode::Esc => {
+                // Close find overlay
+                self.find_overlay_visible = false;
+                self.find_query.clear();
+                self.find_matches.clear();
+                self.find_match_index = 0;
+            }
+            KeyCode::Enter | KeyCode::F(3) => {
+                // Go to next match
+                if !self.find_matches.is_empty() {
+                    self.find_match_index = (self.find_match_index + 1) % self.find_matches.len();
+                    self.scroll_to_find_match();
+                }
+            }
+            KeyCode::Up => {
+                // Go to previous match
+                if !self.find_matches.is_empty() {
+                    if self.find_match_index == 0 {
+                        self.find_match_index = self.find_matches.len() - 1;
+                    } else {
+                        self.find_match_index -= 1;
+                    }
+                    self.scroll_to_find_match();
+                }
+            }
+            KeyCode::Down => {
+                // Go to next match
+                if !self.find_matches.is_empty() {
+                    self.find_match_index = (self.find_match_index + 1) % self.find_matches.len();
+                    self.scroll_to_find_match();
+                }
+            }
+            KeyCode::Char(c) => {
+                self.find_query.push(c);
+                self.update_find_matches();
+                self.scroll_to_find_match();
+            }
+            KeyCode::Backspace => {
+                self.find_query.pop();
+                self.update_find_matches();
+                self.scroll_to_find_match();
+            }
+            _ => {}
+        }
+        Ok(())
+    }
+
+    /// Update find matches based on current query
+    /// Searches through visible terminal content
+    fn update_find_matches(&mut self) {
+        self.find_matches.clear();
+        self.find_match_index = 0;
+
+        if self.find_query.is_empty() {
+            return;
+        }
+
+        if let Some(session_id) = self.active_session {
+            if let Some(session) = self.sessions.get(session_id) {
+                let screen = session.screen();
+                let (_rows, cols) = screen.size();
+                let query_lower = self.find_query.to_lowercase();
+
+                // screen.rows(start_col, width) returns iterator over ALL rows
+                // where start_col=0 and width=cols gives us full row content
+                for (row_idx, line) in screen.rows(0, cols).enumerate() {
+                    let line_lower = line.to_lowercase();
+                    
+                    // Search for query in line (case-insensitive)
+                    let mut search_start = 0;
+                    while let Some(pos) = line_lower[search_start..].find(&query_lower) {
+                        let start_col = (search_start + pos) as u16;
+                        let end_col = start_col + self.find_query.len() as u16 - 1;
+                        self.find_matches.push((row_idx as u16, start_col, end_col));
+                        search_start += pos + 1;
+                    }
+                }
+            }
+        }
+    }
+
+    /// Highlight current find match
+    fn scroll_to_find_match(&mut self) {
+        if let Some(&(row, start_col, end_col)) = self.find_matches.get(self.find_match_index) {
+            if let Some(session_id) = self.active_session {
+                if let Some(session) = self.sessions.get_mut(session_id) {
+                    // Select the match for highlighting
+                    session.selection = Some(crate::ssh::TextSelection {
+                        start: (row, start_col),
+                        end: (row, end_col),
+                    });
+                    session.is_selecting = false;
+                }
+            }
+        }
+    }
 }
+

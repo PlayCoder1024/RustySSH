@@ -39,7 +39,8 @@ pub fn render(frame: &mut Frame, app: &App) {
 }
 
 /// Render the main UI with RenderState (avoids borrow conflicts)
-pub fn render_with_state(frame: &mut Frame, state: &RenderState) {
+/// Returns the terminal content area if in session view (for mouse coordinate conversion)
+pub fn render_with_state(frame: &mut Frame, state: &RenderState) -> Option<Rect> {
     let area = frame.size();
     
     // Clear background
@@ -55,11 +56,14 @@ pub fn render_with_state(frame: &mut Frame, state: &RenderState) {
         ])
         .split(area);
     
+    // Track terminal area for session view mouse handling
+    let mut terminal_area = None;
+    
     // Render view based on current state
     match state.view {
         View::Connections => views::connections::render_state(frame, state, chunks[0]),
         View::Session => {
-            views::session::render_state(frame, state, chunks[0]);
+            terminal_area = views::session::render_state(frame, state, chunks[0]);
             // Render overlays on top of session view
             if state.session_list_visible {
                 views::session_list::render_session_list(frame, state, chunks[0]);
@@ -76,6 +80,8 @@ pub fn render_with_state(frame: &mut Frame, state: &RenderState) {
     
     // Render status bar
     render_status_bar_state(frame, state, chunks[1]);
+    
+    terminal_area
 }
 
 /// Render the status bar at the bottom
