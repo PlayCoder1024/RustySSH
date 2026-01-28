@@ -11,33 +11,20 @@ RustySSH is a terminal-based SSH connection manager with a beautiful, btop-inspi
 > [!IMPORTANT]
 > This project is **totally vibecoding**. Every line of code is driven by LLM.
 
-
 ## ✨ Features
 
 - **🖥️ Beautiful TUI** - Dark theme with Tokyo Night colors, responsive layout
-- **🔗 Connection Management** - Organize hosts in groups, quick connect with Enter
+- **🔗 Connection Management** - Organize hosts in groups, quick connect
 - **🔑 Multiple Auth Methods** - Password, key file, SSH agent, certificates
-- **📁 SFTP Browser** - Dual-pane file manager (coming soon)
-- **🔀 SSH Tunnels** - Local, remote, and dynamic port forwarding (coming soon)
-- **🗝️ Key Management** - View, generate, and manage SSH keys (coming soon)
+- **🔀 Proxy Support** - Jump hosts, SOCKS4/5, HTTP CONNECT, ProxyCommand
+- **📁 SFTP Browser** - Dual-pane file manager
+- **💻 Multi-Session** - Multiple concurrent SSH sessions with quick switching
+- **🔒 Credential Storage** - Encrypted password vault with master password
 - **⚡ Fast & Lightweight** - Built with Rust for speed and reliability
-- **🎨 Font Detection** - Auto-detects Nerd Fonts, falls back to Unicode/ASCII
+
+📋 **[Full feature list and roadmap →](docs/feature_plan.md)**
 
 ## 📦 Installation
-
-### From Source
-
-```bash
-# Clone the repository
-git clone https://github.com/yourusername/rustyssh.git
-cd rustyssh
-
-# Build and install
-cargo build --release
-
-# Run
-./target/release/rustyssh
-```
 
 ### Requirements
 
@@ -55,6 +42,15 @@ brew install libssh2
 sudo apt install libssh2-1-dev
 ```
 
+### From Source
+
+```bash
+git clone https://github.com/yourusername/rustyssh.git
+cd rustyssh
+cargo build --release
+./target/release/rustyssh
+```
+
 ## 🚀 Quick Start
 
 1. **Run RustySSH:**
@@ -65,43 +61,25 @@ sudo apt install libssh2-1-dev
 2. **Add your first host:**
    - Press `n` to create a new host
    - Press `e` to edit the config in your `$EDITOR`
-   - Modify the host settings in YAML format
 
 3. **Connect:**
-   - Use `j`/`k` or `↑`/`↓` to select a host
+   - Use `j`/`k` or `↑`/`↓` to navigate
    - Press `Enter` to connect
 
 ## ⌨️ Keyboard Shortcuts
 
-### Connections View
 | Key | Action |
 |-----|--------|
 | `Enter` | Connect to selected host |
 | `n` | Add new host |
 | `e` | Edit config file |
 | `d` | Delete selected host |
-| `j`/`↓` | Move down |
-| `k`/`↑` | Move up |
-| `g` | Go to top |
-| `G` | Go to bottom |
-| `t` | Tunnels view |
+| `j`/`k` or `↑`/`↓` | Navigate |
+| `Tab` | Switch sessions |
+| `Shift+Esc` | Return to connections |
 | `f` | SFTP view |
-| `K` (Shift) | Keys view |
-| `s` | Settings |
 | `?` | Help |
 | `q` | Quit |
-
-### Session View
-| Key | Action |
-|-----|--------|
-| `Shift+Esc` | Return to connections |
-| `Ctrl+C` | Disconnect |
-
-### Global
-| Key | Action |
-|-----|--------|
-| `Ctrl+Q` | Quit application |
-| `Esc` | Go back / Cancel |
 
 ## ⚙️ Configuration
 
@@ -114,28 +92,14 @@ settings:
     mouse_enabled: true
   ssh:
     connection_timeout: 30
-    keepalive_interval: 60
 
 groups:
   - name: Production
-    expanded: true
     hosts:
-      - name: web-server-1
+      - name: web-server
         hostname: 192.168.1.100
-        port: 22
         username: admin
         auth: !Agent
-        tags: [web, prod]
-
-  - name: Development
-    expanded: true
-    hosts:
-      - name: dev-box
-        hostname: dev.example.com
-        username: developer
-        auth: !KeyFile
-          path: ~/.ssh/id_ed25519
-          passphrase_required: false
 
 hosts:
   - name: personal-server
@@ -147,97 +111,44 @@ hosts:
 ### Authentication Methods
 
 ```yaml
-# SSH Agent (recommended)
-auth: !Agent
-
-# Password (prompted on connect)
-auth: !Password
-
-# Key File
-auth: !KeyFile
+auth: !Agent                    # SSH Agent (recommended)
+auth: !Password                 # Password (prompted)
+auth: !KeyFile                  # Key file
   path: ~/.ssh/id_rsa
-  passphrase_required: true
-
-# Certificate
-auth: !Certificate
-  cert_path: ~/.ssh/id_ed25519-cert.pub
+auth: !Certificate              # Certificate
+  cert_path: ~/.ssh/id-cert.pub
   key_path: ~/.ssh/id_ed25519
 ```
 
-## 🎨 Icon Support
+### Proxy Configuration
 
-RustySSH auto-detects Nerd Font support and uses appropriate icons:
-
-| Environment | Icons Used |
-|-------------|-----------|
-| Kitty, Alacritty, WezTerm | Nerd Font glyphs |
-| iTerm2, Terminal.app | Unicode/ASCII symbols |
-
-**Force Nerd Fonts:**
-```bash
-export NERD_FONT=1
-rustyssh
+```yaml
+proxy: !JumpHost               # SSH jump host
+  host: bastion-uuid-or-name
+proxy: !Socks5                 # SOCKS5 proxy
+  address: 127.0.0.1
+  port: 1080
+proxy: !Http                   # HTTP CONNECT proxy
+  address: proxy.example.com
+  port: 8080
+proxy: !ProxyCommand           # Custom command
+  command: "nc -x localhost:1080 %h %p"
 ```
 
-**Force ASCII:**
-```bash
-export NERD_FONT=0
-rustyssh
-```
+## 📚 Documentation
 
-## 🏗️ Architecture
-
-```
-src/
-├── main.rs          # Entry point
-├── lib.rs           # Library exports
-├── app/             # Application state & events
-│   ├── events.rs    # Event handling system
-│   └── state.rs     # App state machine
-├── config/          # Configuration management
-│   ├── hosts.rs     # Host & auth definitions
-│   └── settings.rs  # App settings
-├── ssh/             # SSH functionality
-│   ├── auth.rs      # Authentication handlers
-│   ├── connection.rs # Connection pool
-│   ├── keys.rs      # Key management
-│   ├── session.rs   # Terminal emulation
-│   └── tunnel.rs    # Port forwarding
-├── sftp/            # SFTP functionality
-│   ├── browser.rs   # File browser
-│   └── transfer.rs  # Transfer queue
-├── tui/             # Terminal UI
-│   ├── theme.rs     # Color themes
-│   ├── icons.rs     # Icon detection
-│   ├── ui.rs        # Main renderer
-│   ├── views/       # UI views
-│   └── widgets/     # Reusable widgets
-└── utils/           # Utilities
-    └── terminal.rs  # Terminal helpers
-```
+| Document | Description |
+|----------|-------------|
+| [Architecture](docs/architecture.md) | System design, module structure, data flow |
+| [Source Guide](docs/source.md) | Complete source code reference |
+| [Feature Plan](docs/feature_plan.md) | Current features and roadmap |
 
 ## 🧰 Tech Stack
 
 - **[Ratatui](https://github.com/ratatui-org/ratatui)** - TUI framework
-- **[Crossterm](https://github.com/crossterm-rs/crossterm)** - Terminal manipulation
 - **[ssh2](https://github.com/alexcrichton/ssh2-rs)** - SSH2 protocol (libssh2)
 - **[vt100](https://github.com/doy/vt100-rust)** - Terminal emulation
 - **[Tokio](https://tokio.rs/)** - Async runtime
-- **[Serde](https://serde.rs/)** - Serialization
-
-## 🛣️ Roadmap
-
-- [x] Core TUI with views
-- [x] Configuration management
-- [x] SSH connection integration
-- [x] Dynamic icon support
-- [x] SFTP file operations
-- [ ] Tunnel management UI
-- [ ] Key generation UI
-- [ ] Clipboard support
-- [x] Session tabs
-- [ ] Search/filter hosts
-- [ ] Import from ~/.ssh/config
 
 ## 🤝 Contributing
 
@@ -248,6 +159,8 @@ Contributions are welcome! Please feel free to submit a Pull Request.
 3. Commit your changes (`git commit -m 'Add amazing feature'`)
 4. Push to the branch (`git push origin feature/amazing-feature`)
 5. Open a Pull Request
+
+See [Feature Plan](docs/feature_plan.md#contributing) for areas where help is needed.
 
 ## 📄 License
 
