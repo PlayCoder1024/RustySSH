@@ -3,7 +3,7 @@
 **A modern, high-performance TUI SSH connection manager built in Rust**
 
 ![Rust](https://img.shields.io/badge/rust-1.70+-orange.svg)
-![License](https://img.shields.io/badge/license-MIT-blue.svg)
+![License](https://img.shields.io/badge/license-Apache%202.0-blue.svg)
 ![Platform](https://img.shields.io/badge/platform-macOS%20%7C%20Linux-lightgrey.svg)
 
 RustySSH is a terminal-based SSH connection manager with a beautiful, btop-inspired interface. Manage your SSH connections, tunnels, and keys all from one elegant TUI application.
@@ -227,11 +227,11 @@ src/
 - [x] Configuration management
 - [x] SSH connection integration
 - [x] Dynamic icon support
-- [ ] SFTP file operations
+- [x] SFTP file operations
 - [ ] Tunnel management UI
 - [ ] Key generation UI
 - [ ] Clipboard support
-- [ ] Session tabs
+- [x] Session tabs
 - [ ] Search/filter hosts
 - [ ] Import from ~/.ssh/config
 
@@ -247,7 +247,7 @@ Contributions are welcome! Please feel free to submit a Pull Request.
 
 ## 📄 License
 
-This project is licensed under the MIT License - see the [LICENSE](LICENSE) file for details.
+This project is licensed under the Apache License 2.0 - see the [LICENSE](LICENSE) file for details.
 
 ## 🙏 Acknowledgments
 
