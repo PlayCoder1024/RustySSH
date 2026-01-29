@@ -169,6 +169,7 @@ impl Default for TerminalHighlightConfig {
 }
 
 /// Keyword category for highlighting
+#[allow(dead_code)]
 #[derive(Debug, Clone, Copy, PartialEq)]
 enum KeywordCategory {
     Success,

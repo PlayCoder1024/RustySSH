@@ -4,7 +4,7 @@ use crate::config::HostConfig;
 use anyhow::{anyhow, Result};
 use ssh2::Session;
 use std::collections::HashMap;
-use std::io::{Read, Write};
+use std::io::Read;
 use std::net::{TcpStream, ToSocketAddrs};
 use std::time::Duration;
 

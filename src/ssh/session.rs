@@ -58,6 +58,7 @@ impl TextSelection {
 }
 
 /// Interactive SSH session with terminal emulation
+#[allow(unused)]
 pub struct Session {
     /// Session ID
     pub id: Uuid,

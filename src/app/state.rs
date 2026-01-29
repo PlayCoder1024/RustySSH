@@ -2557,15 +2557,10 @@ impl App {
     }
 
     async fn handle_settings_key(&mut self, key: crossterm::event::KeyEvent) -> Result<()> {
-        
-
         // Number of categories and items per category
         const CATEGORIES: &[&str] = &["Appearance", "SSH", "Logging"];
         // Items per category: [Appearance: theme, mouse, status_bar, scrollback, graph_style], [SSH: timeout, keepalive, reconnect], [Logging: enabled, format]
         const ITEMS_PER_CATEGORY: &[usize] = &[5, 3, 2];
-        const THEMES: &[&str] = &["tokyo-night", "gruvbox-dark", "dracula", "nord"];
-        const GRAPH_STYLES: &[&str] = &["braille", "block", "ascii"];
-        const LOG_FORMATS: &[&str] = &["timestamped", "raw"];
 
         // If dropdown is open, handle dropdown navigation
         if self.settings_dropdown_open {
@@ -2734,7 +2729,6 @@ impl App {
 
     /// Apply next option in dropdown
     async fn apply_dropdown_next(&mut self) -> Result<()> {
-        
         const THEMES: &[&str] = &["tokyo-night", "gruvbox-dark", "dracula", "nord"];
         const GRAPH_STYLES: &[&str] = &["braille", "block", "ascii"];
         const LOG_FORMATS: &[&str] = &["timestamped", "raw"];
@@ -2781,7 +2775,6 @@ impl App {
 
     /// Apply previous option in dropdown
     async fn apply_dropdown_prev(&mut self) -> Result<()> {
-        
         const THEMES: &[&str] = &["tokyo-night", "gruvbox-dark", "dracula", "nord"];
         const GRAPH_STYLES: &[&str] = &["braille", "block", "ascii"];
         const LOG_FORMATS: &[&str] = &["timestamped", "raw"];
