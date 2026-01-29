@@ -43,6 +43,11 @@ pub fn render_state(frame: &mut Frame, state: &RenderState, area: Rect) {
     if let Some(host_name) = &state.connecting_to_host {
         render_connecting_overlay(frame, theme, area, host_name, state.connection_start_time);
     }
+    
+    // Render host search overlay if searching
+    if state.host_search_visible {
+        render_host_search_overlay(frame, state, area);
+    }
 }
 
 /// Render the ASCII art banner
@@ -220,6 +225,152 @@ fn render_connecting_overlay(
         .alignment(Alignment::Center);
     
     frame.render_widget(paragraph, inner);
+}
+
+/// Render host search overlay with input and filtered list
+fn render_host_search_overlay(
+    frame: &mut Frame,
+    state: &RenderState,
+    area: Rect,
+) {
+    use ratatui::widgets::Clear;
+    
+    let theme = &state.theme;
+    
+    // Calculate overlay size and position (centered)
+    let max_results = 10u16;
+    let width = 60u16.min(area.width.saturating_sub(4));
+    let height = (5 + max_results).min(area.height.saturating_sub(4));
+    let x = area.x + (area.width.saturating_sub(width)) / 2;
+    let y = area.y + (area.height.saturating_sub(height)) / 2;
+    let overlay_area = Rect::new(x, y, width, height);
+    
+    // Clear the area behind the overlay
+    frame.render_widget(Clear, overlay_area);
+    
+    // Create overlay block with border
+    let block = Block::default()
+        .title(Line::from(vec![
+            Span::styled(" 󰍉 ", Style::default().fg(theme.accent_primary())),
+            Span::styled("Search Hosts", theme.title()),
+            Span::styled(" ", theme.title()),
+        ]))
+        .title_alignment(Alignment::Center)
+        .borders(Borders::ALL)
+        .border_style(Style::default().fg(theme.accent_primary()))
+        .style(Style::default().bg(theme.bg_panel()));
+    
+    let inner = block.inner(overlay_area);
+    frame.render_widget(block, overlay_area);
+    
+    // Split inner area: input + results + hints
+    let chunks = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([
+            Constraint::Length(3),  // Input box
+            Constraint::Min(1),     // Results list
+            Constraint::Length(1),  // Hints
+        ])
+        .split(inner);
+    
+    // Input box
+    let input_block = Block::default()
+        .borders(Borders::ALL)
+        .border_style(Style::default().fg(theme.accent_info()))
+        .title(Span::styled(" Type to filter ", theme.text_dim()))
+        .style(Style::default().bg(theme.bg_panel()));
+    
+    let input_content = format!("{}_", state.host_search_query);
+    let input = Paragraph::new(input_content)
+        .style(Style::default().fg(theme.fg_bright()))
+        .block(input_block);
+    frame.render_widget(input, chunks[0]);
+    
+    // Results list - get host info for display
+    let hosts = {
+        let mut hosts_info: Vec<(usize, String, String)> = Vec::new();
+        let mut idx = 0usize;
+        for group in &state.config.groups {
+            if group.expanded {
+                for host in &group.hosts {
+                    hosts_info.push((idx, host.name.clone(), host.connection_string()));
+                    idx += 1;
+                }
+            }
+        }
+        for host in &state.config.hosts {
+            hosts_info.push((idx, host.name.clone(), host.connection_string()));
+            idx += 1;
+        }
+        hosts_info
+    };
+    
+    // Build result list items
+    let result_items: Vec<ListItem> = state.host_search_results
+        .iter()
+        .take(max_results as usize)
+        .enumerate()
+        .map(|(display_idx, &host_idx)| {
+            let is_selected = display_idx == state.host_search_selected;
+            
+            if let Some((_, name, conn)) = hosts.get(host_idx) {
+                let (prefix, name_style, conn_style) = if is_selected {
+                    (
+                        "▶ ",
+                        Style::default().fg(theme.accent_primary()).add_modifier(Modifier::BOLD),
+                        Style::default().fg(theme.accent_info()),
+                    )
+                } else {
+                    (
+                        "  ",
+                        theme.text_bright(),
+                        theme.text_dim(),
+                    )
+                };
+                
+                ListItem::new(Line::from(vec![
+                    Span::styled(prefix, if is_selected { 
+                        Style::default().fg(theme.accent_primary()) 
+                    } else { 
+                        theme.text()
+                    }),
+                    Span::styled(format!("{:16}", name), name_style),
+                    Span::styled(" │ ", theme.text_dim()),
+                    Span::styled(conn.clone(), conn_style),
+                ]))
+            } else {
+                ListItem::new(Line::from(""))
+            }
+        })
+        .collect();
+    
+    if result_items.is_empty() {
+        let empty_msg = if state.host_search_query.is_empty() {
+            "No hosts configured"
+        } else {
+            "No matching hosts"
+        };
+        let empty = Paragraph::new(empty_msg)
+            .style(theme.text_dim())
+            .alignment(Alignment::Center);
+        frame.render_widget(empty, chunks[1]);
+    } else {
+        let list = List::new(result_items);
+        frame.render_widget(list, chunks[1]);
+    }
+    
+    // Hints at bottom
+    let hints = Line::from(vec![
+        Span::styled("Enter", theme.key_hint()),
+        Span::styled(":Select  ", theme.text_dim()),
+        Span::styled("↑↓", theme.key_hint()),
+        Span::styled(":Navigate  ", theme.text_dim()),
+        Span::styled("Esc", theme.key_hint()),
+        Span::styled(":Cancel", theme.text_dim()),
+    ]);
+    let hints_para = Paragraph::new(hints)
+        .alignment(Alignment::Center);
+    frame.render_widget(hints_para, chunks[2]);
 }
 
 fn render_host_list_state(frame: &mut Frame, state: &RenderState, area: Rect) {

@@ -88,6 +88,14 @@ pub struct RenderState {
     pub find_match_index: usize,
     /// Total find matches count
     pub find_match_count: usize,
+    /// Host search overlay visible (connections view)
+    pub host_search_visible: bool,
+    /// Host search query
+    pub host_search_query: String,
+    /// Host search result indices
+    pub host_search_results: Vec<usize>,
+    /// Host search selected index
+    pub host_search_selected: usize,
 }
 
 /// Snapshot of a file pane for rendering
@@ -218,6 +226,14 @@ pub struct App {
     pub terminal_area: Option<ratatui::layout::Rect>,
     /// Persistent clipboard instance (for Linux X11 persistence)
     pub clipboard: Option<arboard::Clipboard>,
+    /// Host search overlay visible (connections view)
+    pub host_search_visible: bool,
+    /// Host search query
+    pub host_search_query: String,
+    /// Host search result indices
+    pub host_search_results: Vec<usize>,
+    /// Host search selected index
+    pub host_search_selected: usize,
 }
 
 impl App {
@@ -271,6 +287,10 @@ impl App {
             find_matches: Vec::new(),
             terminal_area: None,
             clipboard,
+            host_search_visible: false,
+            host_search_query: String::new(),
+            host_search_results: Vec::new(),
+            host_search_selected: 0,
         })
     }
 
@@ -408,6 +428,10 @@ impl App {
                 find_query: self.find_query.clone(),
                 find_match_index: self.find_match_index,
                 find_match_count: self.find_matches.len(),
+                host_search_visible: self.host_search_visible,
+                host_search_query: self.host_search_query.clone(),
+                host_search_results: self.host_search_results.clone(),
+                host_search_selected: self.host_search_selected,
             };
 
             // Render UI
@@ -784,6 +808,11 @@ impl App {
     }
 
     async fn handle_connections_key(&mut self, key: crossterm::event::KeyEvent) -> Result<()> {
+        // Handle search overlay input first
+        if self.host_search_visible {
+            return self.handle_host_search_key(key).await;
+        }
+
         let host_count = self.all_hosts().len();
 
         match key.code {
@@ -792,6 +821,13 @@ impl App {
             KeyCode::Char('s') => self.view = View::Settings,
             KeyCode::Char('K') => self.view = View::Keys, // Shift+K for Keys view
             KeyCode::Char('t') => self.view = View::Tunnels,
+            KeyCode::Char('/') => {
+                // Open host search overlay
+                self.host_search_visible = true;
+                self.host_search_query.clear();
+                self.host_search_selected = 0;
+                self.update_host_search_results();
+            }
             KeyCode::Char('f') => {
                 // Open SFTP for selected host
                 if let Some(host) = self.selected_host().cloned() {
@@ -852,6 +888,82 @@ impl App {
         }
         Ok(())
     }
+
+    /// Handle keyboard input in host search overlay
+    async fn handle_host_search_key(&mut self, key: crossterm::event::KeyEvent) -> Result<()> {
+        match key.code {
+            KeyCode::Esc => {
+                // Close search overlay
+                self.host_search_visible = false;
+                self.host_search_query.clear();
+                self.host_search_results.clear();
+                self.host_search_selected = 0;
+            }
+            KeyCode::Enter => {
+                // Select the highlighted result
+                if !self.host_search_results.is_empty() {
+                    let selected_idx = self.host_search_results
+                        .get(self.host_search_selected)
+                        .copied()
+                        .unwrap_or(0);
+                    self.selected_host_index = selected_idx;
+                }
+                // Close overlay
+                self.host_search_visible = false;
+                self.host_search_query.clear();
+                self.host_search_results.clear();
+                self.host_search_selected = 0;
+            }
+            KeyCode::Up => {
+                // Move selection up
+                if self.host_search_selected > 0 {
+                    self.host_search_selected -= 1;
+                }
+            }
+            KeyCode::Down => {
+                // Move selection down
+                if self.host_search_selected + 1 < self.host_search_results.len() {
+                    self.host_search_selected += 1;
+                }
+            }
+            KeyCode::Char(c) => {
+                self.host_search_query.push(c);
+                self.update_host_search_results();
+                self.host_search_selected = 0;
+            }
+            KeyCode::Backspace => {
+                self.host_search_query.pop();
+                self.update_host_search_results();
+                self.host_search_selected = 0;
+            }
+            _ => {}
+        }
+        Ok(())
+    }
+
+    /// Update host search results based on current query
+    fn update_host_search_results(&mut self) {
+        let query = self.host_search_query.to_lowercase();
+        let hosts = self.all_hosts();
+        
+        if query.is_empty() {
+            // Show all hosts when query is empty
+            self.host_search_results = (0..hosts.len()).collect();
+        } else {
+            // Filter hosts by name, hostname, or username
+            self.host_search_results = hosts
+                .iter()
+                .enumerate()
+                .filter(|(_, host)| {
+                    host.name.to_lowercase().contains(&query)
+                        || host.hostname.to_lowercase().contains(&query)
+                        || host.username.to_lowercase().contains(&query)
+                })
+                .map(|(idx, _)| idx)
+                .collect();
+        }
+    }
+
 
     /// Edit configuration file in external editor
     async fn edit_config(&mut self) -> Result<()> {
