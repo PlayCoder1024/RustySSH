@@ -554,6 +554,12 @@ impl App {
     async fn handle_event(&mut self, event: AppEvent) -> Result<()> {
         match event {
             AppEvent::Key(key) => {
+                // Prioritize escape prefix handling (allows holding Ctrl or standard usage)
+                if self.view == View::Session && self.escape_prefix_active {
+                    self.handle_key(key).await?;
+                    return Ok(());
+                }
+
                 // Handle Ctrl+Shift combinations (copy/paste in session)
                 if self.view == View::Session && key.modifiers.contains(KeyModifiers::CONTROL) {
                     // Check if there is an active selection
@@ -1930,12 +1936,12 @@ impl App {
 
             match key.code {
                 // n - Next session
-                KeyCode::Char('n') => {
+                KeyCode::Char('n') | KeyCode::Char('N') => {
                     self.switch_to_next_session();
                     return Ok(());
                 }
                 // p - Previous session
-                KeyCode::Char('p') => {
+                KeyCode::Char('p') | KeyCode::Char('P') => {
                     self.switch_to_prev_session();
                     return Ok(());
                 }
@@ -1946,18 +1952,18 @@ impl App {
                     return Ok(());
                 }
                 // l - Show session list
-                KeyCode::Char('l') => {
+                KeyCode::Char('l') | KeyCode::Char('L') => {
                     self.session_list_visible = true;
                     self.session_list_selected = self.get_active_session_index();
                     return Ok(());
                 }
                 // c - New connection (show connection overlay)
-                KeyCode::Char('c') => {
+                KeyCode::Char('c') | KeyCode::Char('C') => {
                     self.show_connection_overlay = true;
                     return Ok(());
                 }
                 // w - Close current session
-                KeyCode::Char('w') => {
+                KeyCode::Char('w') | KeyCode::Char('W') => {
                     self.close_current_session().await;
                     return Ok(());
                 }
