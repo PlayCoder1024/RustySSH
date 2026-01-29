@@ -20,7 +20,7 @@ use crossterm::{
 use ratatui::prelude::*;
 use std::io::{self, stdout, Stdout};
 
-pub use theme::Theme;
+pub use theme::{Theme, gruvbox_dark, dracula, nord};
 pub use icons::Icons;
 pub use highlight::TerminalHighlightConfig;
 pub use ui::{render, render_with_state};

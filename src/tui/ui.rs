@@ -47,39 +47,48 @@ pub fn render_with_state(frame: &mut Frame, state: &RenderState) -> Option<Rect>
     let bg_block = Block::default().style(state.theme.text());
     frame.render_widget(bg_block, area);
     
-    // Layout: Main content + status bar
-    let chunks = Layout::default()
-        .direction(Direction::Vertical)
-        .constraints([
-            Constraint::Min(3),    // Main content
-            Constraint::Length(1), // Status bar
-        ])
-        .split(area);
+    // Layout: Main content + optional status bar
+    let show_status_bar = state.config.settings.ui.show_status_bar;
+    let (main_area, status_area) = if show_status_bar {
+        let chunks = Layout::default()
+            .direction(Direction::Vertical)
+            .constraints([
+                Constraint::Min(3),    // Main content
+                Constraint::Length(1), // Status bar
+            ])
+            .split(area);
+        (chunks[0], Some(chunks[1]))
+    } else {
+        // Full area for content when status bar is hidden
+        (area, None)
+    };
     
     // Track terminal area for session view mouse handling
     let mut terminal_area = None;
     
     // Render view based on current state
     match state.view {
-        View::Connections => views::connections::render_state(frame, state, chunks[0]),
+        View::Connections => views::connections::render_state(frame, state, main_area),
         View::Session => {
-            terminal_area = views::session::render_state(frame, state, chunks[0]);
+            terminal_area = views::session::render_state(frame, state, main_area);
             // Render overlays on top of session view
             if state.session_list_visible {
-                views::session_list::render_session_list(frame, state, chunks[0]);
+                views::session_list::render_session_list(frame, state, main_area);
             } else if state.show_connection_overlay {
-                views::session_list::render_connection_overlay(frame, state, chunks[0]);
+                views::session_list::render_connection_overlay(frame, state, main_area);
             }
         }
-        View::Sftp => views::sftp::render_state(frame, state, chunks[0]),
-        View::Tunnels => views::tunnels::render_state(frame, state, chunks[0]),
-        View::Keys => views::keys::render_state(frame, state, chunks[0]),
-        View::Settings => views::settings::render_state(frame, state, chunks[0]),
-        View::Help => views::help::render_state(frame, state, chunks[0]),
+        View::Sftp => views::sftp::render_state(frame, state, main_area),
+        View::Tunnels => views::tunnels::render_state(frame, state, main_area),
+        View::Keys => views::keys::render_state(frame, state, main_area),
+        View::Settings => views::settings::render_state(frame, state, main_area),
+        View::Help => views::help::render_state(frame, state, main_area),
     }
     
-    // Render status bar
-    render_status_bar_state(frame, state, chunks[1]);
+    // Render status bar if enabled
+    if let Some(status_bar_area) = status_area {
+        render_status_bar_state(frame, state, status_bar_area);
+    }
     
     terminal_area
 }

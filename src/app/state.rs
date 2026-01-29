@@ -96,6 +96,12 @@ pub struct RenderState {
     pub host_search_results: Vec<usize>,
     /// Host search selected index
     pub host_search_selected: usize,
+    /// Settings view category index
+    pub settings_category: usize,
+    /// Settings view item index within category
+    pub settings_item: usize,
+    /// Settings dropdown is open
+    pub settings_dropdown_open: bool,
 }
 
 /// Snapshot of a file pane for rendering
@@ -234,13 +240,26 @@ pub struct App {
     pub host_search_results: Vec<usize>,
     /// Host search selected index
     pub host_search_selected: usize,
+    /// Settings view - selected category index
+    pub settings_category: usize,
+    /// Settings view - selected item within category
+    pub settings_item: usize,
+    /// Settings view - dropdown is open
+    pub settings_dropdown_open: bool,
 }
 
 impl App {
     /// Create a new application instance
     pub async fn new() -> Result<Self> {
         let config = Config::load().await?;
-        let theme = Theme::default();
+        
+        // Load theme from config setting
+        let theme = match config.settings.ui.theme.as_str() {
+            "gruvbox-dark" => crate::tui::gruvbox_dark(),
+            "dracula" => crate::tui::dracula(),
+            "nord" => crate::tui::nord(),
+            _ => Theme::default(), // tokyo-night
+        };
         let icons = Icons::detect();
         let tui = Tui::new()?;
         let events = EventHandler::new(Duration::from_millis(50));
@@ -291,6 +310,9 @@ impl App {
             host_search_query: String::new(),
             host_search_results: Vec::new(),
             host_search_selected: 0,
+            settings_category: 0,
+            settings_item: 0,
+            settings_dropdown_open: false,
         })
     }
 
@@ -432,6 +454,9 @@ impl App {
                 host_search_query: self.host_search_query.clone(),
                 host_search_results: self.host_search_results.clone(),
                 host_search_selected: self.host_search_selected,
+                settings_category: self.settings_category,
+                settings_item: self.settings_item,
+                settings_dropdown_open: self.settings_dropdown_open,
             };
 
             // Render UI
@@ -2433,11 +2458,240 @@ impl App {
     }
 
     async fn handle_settings_key(&mut self, key: crossterm::event::KeyEvent) -> Result<()> {
+        use crate::tui::{gruvbox_dark, dracula, nord};
+        
+        // Number of categories and items per category
+        const CATEGORIES: &[&str] = &["Appearance", "SSH", "Logging"];
+        // Items per category: [Appearance: theme, mouse, status_bar, scrollback, graph_style], [SSH: timeout, keepalive, reconnect], [Logging: enabled, format]
+        const ITEMS_PER_CATEGORY: &[usize] = &[5, 3, 2];
+        const THEMES: &[&str] = &["tokyo-night", "gruvbox-dark", "dracula", "nord"];
+        const GRAPH_STYLES: &[&str] = &["braille", "block", "ascii"];
+        const LOG_FORMATS: &[&str] = &["timestamped", "raw"];
+        
+        // If dropdown is open, handle dropdown navigation
+        if self.settings_dropdown_open {
+            match key.code {
+                KeyCode::Esc => {
+                    self.settings_dropdown_open = false;
+                }
+                KeyCode::Up | KeyCode::Char('k') => {
+                    // This will be handled in the render - we cycle through options
+                    // For now, apply previous option directly
+                    self.apply_dropdown_prev().await?;
+                }
+                KeyCode::Down | KeyCode::Char('j') => {
+                    self.apply_dropdown_next().await?;
+                }
+                KeyCode::Enter | KeyCode::Char(' ') => {
+                    // Confirm and close dropdown
+                    self.settings_dropdown_open = false;
+                    self.config.save().await?;
+                }
+                _ => {}
+            }
+            return Ok(());
+        }
+        
         match key.code {
-            KeyCode::Esc => self.view = View::Connections,
+            KeyCode::Esc => {
+                self.view = View::Connections;
+                self.settings_category = 0;
+                self.settings_item = 0;
+            }
+            KeyCode::Char('?') => self.view = View::Help,
+            
+            // Category navigation (Tab or Left/Right)
+            KeyCode::Tab | KeyCode::Right | KeyCode::Char('l') => {
+                self.settings_category = (self.settings_category + 1) % CATEGORIES.len();
+                self.settings_item = 0;
+            }
+            KeyCode::BackTab | KeyCode::Left | KeyCode::Char('h') => {
+                if self.settings_category == 0 {
+                    self.settings_category = CATEGORIES.len() - 1;
+                } else {
+                    self.settings_category -= 1;
+                }
+                self.settings_item = 0;
+            }
+            
+            // Item navigation (Up/Down)
+            KeyCode::Up | KeyCode::Char('k') => {
+                let max_items = ITEMS_PER_CATEGORY[self.settings_category];
+                if self.settings_item == 0 {
+                    self.settings_item = max_items - 1;
+                } else {
+                    self.settings_item -= 1;
+                }
+            }
+            KeyCode::Down | KeyCode::Char('j') => {
+                let max_items = ITEMS_PER_CATEGORY[self.settings_category];
+                self.settings_item = (self.settings_item + 1) % max_items;
+            }
+            
+            // Toggle or open dropdown
+            KeyCode::Enter | KeyCode::Char(' ') => {
+                match self.settings_category {
+                    0 => { // Appearance
+                        match self.settings_item {
+                            0 => { // Theme - open dropdown
+                                self.settings_dropdown_open = true;
+                            }
+                            1 => { // Mouse enabled - toggle
+                                self.config.settings.ui.mouse_enabled = !self.config.settings.ui.mouse_enabled;
+                                self.config.save().await?;
+                            }
+                            2 => { // Status bar - toggle
+                                self.config.settings.ui.show_status_bar = !self.config.settings.ui.show_status_bar;
+                                self.config.save().await?;
+                            }
+                            3 => { // Scrollback - toggle between presets
+                                self.config.settings.ui.scrollback_lines = match self.config.settings.ui.scrollback_lines {
+                                    1000 => 5000,
+                                    5000 => 10000,
+                                    10000 => 50000,
+                                    50000 => 100000,
+                                    _ => 1000,
+                                };
+                                self.config.save().await?;
+                            }
+                            4 => { // Graph style - open dropdown
+                                self.settings_dropdown_open = true;
+                            }
+                            _ => {}
+                        }
+                    }
+                    1 => { // SSH
+                        match self.settings_item {
+                            0 => { // Connection timeout - cycle through presets
+                                self.config.settings.ssh.connection_timeout = match self.config.settings.ssh.connection_timeout {
+                                    10 => 30,
+                                    30 => 60,
+                                    60 => 120,
+                                    _ => 10,
+                                };
+                                self.config.save().await?;
+                            }
+                            1 => { // Keepalive - cycle
+                                self.config.settings.ssh.keepalive_interval = match self.config.settings.ssh.keepalive_interval {
+                                    0 => 15,
+                                    15 => 30,
+                                    30 => 60,
+                                    _ => 0,
+                                };
+                                self.config.save().await?;
+                            }
+                            2 => { // Reconnect attempts - cycle
+                                self.config.settings.ssh.reconnect_attempts = match self.config.settings.ssh.reconnect_attempts {
+                                    0 => 1,
+                                    1 => 3,
+                                    3 => 5,
+                                    5 => 10,
+                                    _ => 0,
+                                };
+                                self.config.save().await?;
+                            }
+                            _ => {}
+                        }
+                    }
+                    2 => { // Logging
+                        match self.settings_item {
+                            0 => { // Logging enabled - toggle
+                                self.config.settings.logging.enabled = !self.config.settings.logging.enabled;
+                                self.config.save().await?;
+                            }
+                            1 => { // Log format - open dropdown
+                                self.settings_dropdown_open = true;
+                            }
+                            _ => {}
+                        }
+                    }
+                    _ => {}
+                }
+            }
             _ => {}
         }
         Ok(())
+    }
+    
+    /// Apply next option in dropdown
+    async fn apply_dropdown_next(&mut self) -> Result<()> {
+        use crate::tui::{gruvbox_dark, dracula, nord};
+        const THEMES: &[&str] = &["tokyo-night", "gruvbox-dark", "dracula", "nord"];
+        const GRAPH_STYLES: &[&str] = &["braille", "block", "ascii"];
+        const LOG_FORMATS: &[&str] = &["timestamped", "raw"];
+        
+        match self.settings_category {
+            0 => match self.settings_item {
+                0 => { // Theme
+                    let current = THEMES.iter().position(|&t| t == self.config.settings.ui.theme).unwrap_or(0);
+                    let next = (current + 1) % THEMES.len();
+                    self.config.settings.ui.theme = THEMES[next].to_string();
+                    self.apply_theme(&THEMES[next].to_string());
+                }
+                4 => { // Graph style
+                    let current = GRAPH_STYLES.iter().position(|&s| s == self.config.settings.ui.graph_style).unwrap_or(0);
+                    let next = (current + 1) % GRAPH_STYLES.len();
+                    self.config.settings.ui.graph_style = GRAPH_STYLES[next].to_string();
+                }
+                _ => {}
+            },
+            2 => match self.settings_item {
+                1 => { // Log format
+                    let current = LOG_FORMATS.iter().position(|&f| f == self.config.settings.logging.format).unwrap_or(0);
+                    let next = (current + 1) % LOG_FORMATS.len();
+                    self.config.settings.logging.format = LOG_FORMATS[next].to_string();
+                }
+                _ => {}
+            },
+            _ => {}
+        }
+        Ok(())
+    }
+    
+    /// Apply previous option in dropdown
+    async fn apply_dropdown_prev(&mut self) -> Result<()> {
+        use crate::tui::{gruvbox_dark, dracula, nord};
+        const THEMES: &[&str] = &["tokyo-night", "gruvbox-dark", "dracula", "nord"];
+        const GRAPH_STYLES: &[&str] = &["braille", "block", "ascii"];
+        const LOG_FORMATS: &[&str] = &["timestamped", "raw"];
+        
+        match self.settings_category {
+            0 => match self.settings_item {
+                0 => { // Theme
+                    let current = THEMES.iter().position(|&t| t == self.config.settings.ui.theme).unwrap_or(0);
+                    let prev = if current == 0 { THEMES.len() - 1 } else { current - 1 };
+                    self.config.settings.ui.theme = THEMES[prev].to_string();
+                    self.apply_theme(&THEMES[prev].to_string());
+                }
+                4 => { // Graph style
+                    let current = GRAPH_STYLES.iter().position(|&s| s == self.config.settings.ui.graph_style).unwrap_or(0);
+                    let prev = if current == 0 { GRAPH_STYLES.len() - 1 } else { current - 1 };
+                    self.config.settings.ui.graph_style = GRAPH_STYLES[prev].to_string();
+                }
+                _ => {}
+            },
+            2 => match self.settings_item {
+                1 => { // Log format
+                    let current = LOG_FORMATS.iter().position(|&f| f == self.config.settings.logging.format).unwrap_or(0);
+                    let prev = if current == 0 { LOG_FORMATS.len() - 1 } else { current - 1 };
+                    self.config.settings.logging.format = LOG_FORMATS[prev].to_string();
+                }
+                _ => {}
+            },
+            _ => {}
+        }
+        Ok(())
+    }
+    
+    /// Apply a theme by name
+    fn apply_theme(&mut self, theme_name: &str) {
+        use crate::tui::{gruvbox_dark, dracula, nord};
+        self.theme = match theme_name {
+            "gruvbox-dark" => gruvbox_dark(),
+            "dracula" => dracula(),
+            "nord" => nord(),
+            _ => Theme::default(), // tokyo-night
+        };
     }
 
     async fn handle_help_key(&mut self, key: crossterm::event::KeyEvent) -> Result<()> {
