@@ -1,5 +1,5 @@
 //! SSH functionality
-//! 
+//!
 //! This module uses the ssh2 crate which wraps libssh2
 
 mod auth;
@@ -9,7 +9,7 @@ mod session;
 mod tunnel;
 
 pub use auth::Authenticator;
-pub use connection::{SshConnection, ConnectionPool, ProxyConnection};
+pub use connection::{ConnectionPool, ProxyConnection, SshConnection};
 pub use keys::KeyManager;
 pub use session::{Session, SessionManager, TextSelection};
 pub use tunnel::{Tunnel, TunnelManager, TunnelType};

@@ -98,25 +98,25 @@ fn format_size(bytes: u64) -> String {
 /// Format Unix permissions to string
 fn format_permissions(perms: u32) -> String {
     let mut s = String::with_capacity(10);
-    
+
     // File type
     s.push(if perms & 0o40000 != 0 { 'd' } else { '-' });
-    
+
     // Owner
     s.push(if perms & 0o400 != 0 { 'r' } else { '-' });
     s.push(if perms & 0o200 != 0 { 'w' } else { '-' });
     s.push(if perms & 0o100 != 0 { 'x' } else { '-' });
-    
+
     // Group
     s.push(if perms & 0o040 != 0 { 'r' } else { '-' });
     s.push(if perms & 0o020 != 0 { 'w' } else { '-' });
     s.push(if perms & 0o010 != 0 { 'x' } else { '-' });
-    
+
     // Other
     s.push(if perms & 0o004 != 0 { 'r' } else { '-' });
     s.push(if perms & 0o002 != 0 { 'w' } else { '-' });
     s.push(if perms & 0o001 != 0 { 'x' } else { '-' });
-    
+
     s
 }
 
@@ -427,7 +427,7 @@ impl FileBrowser {
     /// Create a new file browser
     pub fn new() -> Self {
         let home = dirs::home_dir().unwrap_or_else(|| PathBuf::from("/"));
-        
+
         Self {
             left: FilePane::new(home.clone(), false),
             right: FilePane::new(PathBuf::from("/"), true),

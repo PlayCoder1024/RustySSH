@@ -37,11 +37,11 @@ impl TextSelection {
     /// Check if a cell is within the selection
     pub fn contains(&self, row: u16, col: u16) -> bool {
         let ((start_row, start_col), (end_row, end_col)) = self.normalized();
-        
+
         if row < start_row || row > end_row {
             return false;
         }
-        
+
         if start_row == end_row {
             // Single line selection
             col >= start_col && col <= end_col
@@ -126,7 +126,7 @@ impl Session {
     pub fn screen_lines(&self) -> Vec<String> {
         let screen = self.vt.screen();
         let mut lines = Vec::new();
-        
+
         for row in 0..screen.size().0 {
             let mut line = String::new();
             for col in 0..screen.size().1 {
@@ -138,7 +138,7 @@ impl Session {
             }
             lines.push(line.trim_end().to_string());
         }
-        
+
         lines
     }
 
@@ -153,21 +153,21 @@ impl Session {
     pub fn scroll_up(&mut self, lines: usize) {
         // vt100's scrollback() returns current scroll position
         let current = self.vt.screen().scrollback();
-        
+
         // Probe for actual scrollback length since it's not exposed
         // This is safe because set_scrollback clamps valid values
         self.vt.screen_mut().set_scrollback(usize::MAX);
         let max_scrollback = self.vt.screen().scrollback();
-        
+
         // Restore current if we weren't just checking max
         if current < max_scrollback {
-             self.vt.screen_mut().set_scrollback(current);
+            self.vt.screen_mut().set_scrollback(current);
         }
 
         // Calculate new offset and clamp
         let new_offset = current.saturating_add(lines);
         let clamped_offset = new_offset.min(max_scrollback);
-        
+
         self.vt.screen_mut().set_scrollback(clamped_offset);
         self.scroll_offset = self.vt.screen().scrollback();
     }
@@ -175,7 +175,9 @@ impl Session {
     /// Scroll down (view newer content)
     pub fn scroll_down(&mut self, lines: usize) {
         let current = self.vt.screen().scrollback();
-        self.vt.screen_mut().set_scrollback(current.saturating_sub(lines));
+        self.vt
+            .screen_mut()
+            .set_scrollback(current.saturating_sub(lines));
         self.scroll_offset = self.vt.screen().scrollback();
     }
 
@@ -233,10 +235,10 @@ impl Session {
         let selection = self.selection?;
         let ((start_row, start_col), (end_row, end_col)) = selection.normalized();
         let screen = self.vt.screen();
-        
+
         // Use vt100's built-in contents_between for much better performance
         let text = screen.contents_between(start_row, start_col, end_row, end_col);
-        
+
         if text.is_empty() {
             None
         } else {
@@ -255,7 +257,7 @@ impl Session {
     pub fn get_all_content_for_search(&self) -> Vec<String> {
         let screen = self.vt.screen();
         let (rows, cols) = screen.size();
-        
+
         // Build content line by line using the rows() method
         screen.rows(0, cols).collect()
     }
@@ -276,13 +278,15 @@ impl Session {
         // to be roughly in the middle if possible
         let (rows, _) = self.vt.screen().size();
         let visible_rows = rows as usize;
-        
+
         // Calculate scrollback position
         // Higher scrollback = older content (scrolled up more)
         if line_offset < visible_rows / 2 {
             self.vt.screen_mut().set_scrollback(line_offset);
         } else {
-            self.vt.screen_mut().set_scrollback(line_offset.saturating_sub(visible_rows / 2));
+            self.vt
+                .screen_mut()
+                .set_scrollback(line_offset.saturating_sub(visible_rows / 2));
         }
         self.scroll_offset = self.vt.screen().scrollback();
     }

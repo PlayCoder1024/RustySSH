@@ -35,7 +35,7 @@ impl CredentialManager {
     pub async fn new() -> Result<Self> {
         let master = MasterPassword::new();
         let vault = CredentialVault::load().await?;
-        
+
         Ok(Self {
             master,
             vault,
@@ -88,9 +88,10 @@ impl CredentialManager {
 
     /// Save a password for a host
     pub async fn save_password(&mut self, host_id: Uuid, password: &str) -> Result<()> {
-        let key = self.encryption_key
+        let key = self
+            .encryption_key
             .ok_or_else(|| anyhow::anyhow!("Master password not unlocked"))?;
-        
+
         self.vault.store(host_id, password, &key)?;
         self.vault.save().await?;
         Ok(())
@@ -98,9 +99,10 @@ impl CredentialManager {
 
     /// Get a saved password for a host
     pub fn get_password(&self, host_id: Uuid) -> Result<Option<String>> {
-        let key = self.encryption_key
+        let key = self
+            .encryption_key
             .ok_or_else(|| anyhow::anyhow!("Master password not unlocked"))?;
-        
+
         self.vault.retrieve(host_id, &key)
     }
 

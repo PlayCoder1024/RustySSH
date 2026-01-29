@@ -11,12 +11,12 @@ pub fn get_terminal_size() -> Result<(u16, u16)> {
 }
 
 /// Detect an available text editor
-/// 
+///
 /// Checks in order:
 /// 1. $EDITOR environment variable
 /// 2. $VISUAL environment variable
 /// 3. Common editors: nano, vim, vi, emacs, code, notepad (probes each)
-/// 
+///
 /// Returns None if no editor is found
 pub fn detect_editor() -> Option<String> {
     // Check EDITOR env var
@@ -25,23 +25,23 @@ pub fn detect_editor() -> Option<String> {
             return Some(editor);
         }
     }
-    
+
     // Check VISUAL env var
     if let Ok(visual) = std::env::var("VISUAL") {
         if !visual.is_empty() && editor_exists(&visual) {
             return Some(visual);
         }
     }
-    
+
     // Probe common editors in order of preference
     let common_editors = ["nano", "vim", "vi", "emacs", "code", "notepad"];
-    
+
     for editor in common_editors {
         if editor_exists(editor) {
             return Some(editor.to_string());
         }
     }
-    
+
     None
 }
 
@@ -49,7 +49,7 @@ pub fn detect_editor() -> Option<String> {
 fn editor_exists(editor: &str) -> bool {
     // Extract just the command name (handle cases like "vim -u NONE")
     let cmd = editor.split_whitespace().next().unwrap_or(editor);
-    
+
     // Use 'which' on Unix-like systems
     Command::new("which")
         .arg(cmd)
@@ -96,7 +96,12 @@ pub fn center(s: &str, width: usize) -> String {
     } else {
         let padding = (width - s.len()) / 2;
         let extra = (width - s.len()) % 2;
-        format!("{}{}{}", " ".repeat(padding), s, " ".repeat(padding + extra))
+        format!(
+            "{}{}{}",
+            " ".repeat(padding),
+            s,
+            " ".repeat(padding + extra)
+        )
     }
 }
 

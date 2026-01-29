@@ -18,11 +18,21 @@ pub enum AppEvent {
     /// Tick event for periodic updates
     Tick,
     /// SSH session data received
-    SshData { session_id: uuid::Uuid, data: Vec<u8> },
+    SshData {
+        session_id: uuid::Uuid,
+        data: Vec<u8>,
+    },
     /// SSH session disconnected
-    SshDisconnected { session_id: uuid::Uuid, reason: String },
+    SshDisconnected {
+        session_id: uuid::Uuid,
+        reason: String,
+    },
     /// SFTP transfer progress
-    SftpProgress { transfer_id: uuid::Uuid, bytes: u64, total: u64 },
+    SftpProgress {
+        transfer_id: uuid::Uuid,
+        bytes: u64,
+        total: u64,
+    },
     /// Error notification
     Error(String),
     /// Connection attempt completed (success or failure)

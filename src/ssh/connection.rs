@@ -58,8 +58,6 @@ pub enum ProxyConnection {
     },
 }
 
-
-
 /// Active SSH connection
 pub struct SshConnection {
     /// Connection ID
@@ -88,7 +86,11 @@ pub enum ConnectionStatus {
 
 impl SshConnection {
     /// Create a new direct connection to a host (no proxy)
-    pub fn connect(host: HostConfig, password: Option<&str>, passphrase: Option<&str>) -> Result<Self> {
+    pub fn connect(
+        host: HostConfig,
+        password: Option<&str>,
+        passphrase: Option<&str>,
+    ) -> Result<Self> {
         Self::connect_via_proxy(host, ProxyConnection::Direct, password, passphrase)
     }
 
@@ -101,34 +103,33 @@ impl SshConnection {
     ) -> Result<Self> {
         // Connection timeout
         const CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
-        
+
         match proxy {
             ProxyConnection::Direct => {
                 // Direct TCP connection with timeout
                 let addr = format!("{}:{}", host.hostname, host.port);
-                let socket_addr = addr.to_socket_addrs()
+                let socket_addr = addr
+                    .to_socket_addrs()
                     .map_err(|e| anyhow!("Failed to resolve {}: {}", addr, e))?
                     .next()
                     .ok_or_else(|| anyhow!("No addresses found for {}", addr))?;
-                
+
                 let stream = TcpStream::connect_timeout(&socket_addr, CONNECT_TIMEOUT)
                     .map_err(|e| anyhow!("Connection to {} timed out or failed: {}", addr, e))?;
-                
+
                 stream.set_nonblocking(false)?;
-                
-                let mut session = Session::new()
-                    .map_err(|e| anyhow!("Failed to create SSH session: {}", e))?;
-                
+
+                let mut session =
+                    Session::new().map_err(|e| anyhow!("Failed to create SSH session: {}", e))?;
+
                 session.set_tcp_stream(stream.try_clone()?);
-                
-                session.handshake()
+
+                session
+                    .handshake()
                     .map_err(|e| anyhow!("SSH handshake failed: {}", e))?;
-                
+
                 crate::ssh::auth::Authenticator::authenticate_any(
-                    &session,
-                    &host,
-                    password,
-                    passphrase,
+                    &session, &host, password, passphrase,
                 )?;
 
                 if !session.authenticated() {
@@ -148,21 +149,26 @@ impl SshConnection {
             ProxyConnection::JumpHost { connection } => {
                 // Connect through jump host using direct-tcpip channel
                 let addr = format!("{}:{}", host.hostname, host.port);
-                
+
                 // Ensure the jump connection session is in blocking mode for channel setup
                 connection.session.set_blocking(true);
-                
+
                 // Open a direct-tcpip channel through the jump host
-                let channel = connection.session.channel_direct_tcpip(
-                    &host.hostname,
-                    host.port,
-                    None, // source addr not needed
-                ).map_err(|e| anyhow!("Failed to open tunnel through jump host to {}: {}", addr, e))?;
-                
+                let channel = connection
+                    .session
+                    .channel_direct_tcpip(
+                        &host.hostname,
+                        host.port,
+                        None, // source addr not needed
+                    )
+                    .map_err(|e| {
+                        anyhow!("Failed to open tunnel through jump host to {}: {}", addr, e)
+                    })?;
+
                 // Set session back to non-blocking mode for the proxy thread
                 // This is critical! Without this, channel.read() will block forever
                 connection.session.set_blocking(false);
-                
+
                 // Create a new SSH session and use the channel as transport
                 // Note: ssh2 requires a TcpStream, so we use a socket pair approach
                 // Actually, ssh2's Session can use any Read+Write stream via set_tcp_stream
@@ -170,27 +176,25 @@ impl SshConnection {
                 //
                 // Workaround: Create a local socket pair and proxy the channel through it
                 let (local_stream, remote_stream) = Self::create_socket_pair()?;
-                
+
                 // Spawn a thread to proxy between the channel and the socket
                 let channel_clone = channel;
                 std::thread::spawn(move || {
                     Self::proxy_channel_to_stream(channel_clone, remote_stream);
                 });
-                
+
                 // Now create SSH session over the local end of the socket pair
-                let mut session = Session::new()
-                    .map_err(|e| anyhow!("Failed to create SSH session: {}", e))?;
-                
+                let mut session =
+                    Session::new().map_err(|e| anyhow!("Failed to create SSH session: {}", e))?;
+
                 session.set_tcp_stream(local_stream.try_clone()?);
-                
-                session.handshake()
+
+                session
+                    .handshake()
                     .map_err(|e| anyhow!("SSH handshake through jump host failed: {}", e))?;
-                
+
                 crate::ssh::auth::Authenticator::authenticate_any(
-                    &session,
-                    &host,
-                    password,
-                    passphrase,
+                    &session, &host, password, passphrase,
                 )?;
 
                 if !session.authenticated() {
@@ -207,35 +211,40 @@ impl SshConnection {
                     status: ConnectionStatus::Authenticated,
                 })
             }
-            ProxyConnection::Socks5 { address, port, auth } => {
+            ProxyConnection::Socks5 {
+                address,
+                port,
+                auth,
+            } => {
                 // Connect to SOCKS5 proxy
                 let proxy_addr = format!("{}:{}", address, port);
-                let socket_addr = proxy_addr.to_socket_addrs()
+                let socket_addr = proxy_addr
+                    .to_socket_addrs()
                     .map_err(|e| anyhow!("Failed to resolve SOCKS5 proxy {}: {}", proxy_addr, e))?
                     .next()
                     .ok_or_else(|| anyhow!("No addresses found for SOCKS5 proxy {}", proxy_addr))?;
-                
+
                 let mut stream = TcpStream::connect_timeout(&socket_addr, CONNECT_TIMEOUT)
-                    .map_err(|e| anyhow!("Connection to SOCKS5 proxy {} failed: {}", proxy_addr, e))?;
-                
+                    .map_err(|e| {
+                        anyhow!("Connection to SOCKS5 proxy {} failed: {}", proxy_addr, e)
+                    })?;
+
                 // SOCKS5 handshake (RFC 1928)
                 Self::socks5_handshake(&mut stream, &host.hostname, host.port, auth.as_ref())?;
-                
+
                 stream.set_nonblocking(false)?;
-                
-                let mut session = Session::new()
-                    .map_err(|e| anyhow!("Failed to create SSH session: {}", e))?;
-                
+
+                let mut session =
+                    Session::new().map_err(|e| anyhow!("Failed to create SSH session: {}", e))?;
+
                 session.set_tcp_stream(stream.try_clone()?);
-                
-                session.handshake()
+
+                session
+                    .handshake()
                     .map_err(|e| anyhow!("SSH handshake through SOCKS5 proxy failed: {}", e))?;
-                
+
                 crate::ssh::auth::Authenticator::authenticate_any(
-                    &session,
-                    &host,
-                    password,
-                    passphrase,
+                    &session, &host, password, passphrase,
                 )?;
 
                 if !session.authenticated() {
@@ -252,35 +261,40 @@ impl SshConnection {
                     status: ConnectionStatus::Authenticated,
                 })
             }
-            ProxyConnection::Socks4 { address, port, user_id } => {
+            ProxyConnection::Socks4 {
+                address,
+                port,
+                user_id,
+            } => {
                 // Connect to SOCKS4 proxy
                 let proxy_addr = format!("{}:{}", address, port);
-                let socket_addr = proxy_addr.to_socket_addrs()
+                let socket_addr = proxy_addr
+                    .to_socket_addrs()
                     .map_err(|e| anyhow!("Failed to resolve SOCKS4 proxy {}: {}", proxy_addr, e))?
                     .next()
                     .ok_or_else(|| anyhow!("No addresses found for SOCKS4 proxy {}", proxy_addr))?;
-                
+
                 let mut stream = TcpStream::connect_timeout(&socket_addr, CONNECT_TIMEOUT)
-                    .map_err(|e| anyhow!("Connection to SOCKS4 proxy {} failed: {}", proxy_addr, e))?;
-                
+                    .map_err(|e| {
+                        anyhow!("Connection to SOCKS4 proxy {} failed: {}", proxy_addr, e)
+                    })?;
+
                 // SOCKS4 connect request
                 Self::socks4_handshake(&mut stream, &host.hostname, host.port, user_id.as_deref())?;
-                
+
                 stream.set_nonblocking(false)?;
-                
-                let mut session = Session::new()
-                    .map_err(|e| anyhow!("Failed to create SSH session: {}", e))?;
-                
+
+                let mut session =
+                    Session::new().map_err(|e| anyhow!("Failed to create SSH session: {}", e))?;
+
                 session.set_tcp_stream(stream.try_clone()?);
-                
-                session.handshake()
+
+                session
+                    .handshake()
                     .map_err(|e| anyhow!("SSH handshake through SOCKS4 proxy failed: {}", e))?;
-                
+
                 crate::ssh::auth::Authenticator::authenticate_any(
-                    &session,
-                    &host,
-                    password,
-                    passphrase,
+                    &session, &host, password, passphrase,
                 )?;
 
                 if !session.authenticated() {
@@ -297,35 +311,45 @@ impl SshConnection {
                     status: ConnectionStatus::Authenticated,
                 })
             }
-            ProxyConnection::HttpConnect { address, port, auth } => {
+            ProxyConnection::HttpConnect {
+                address,
+                port,
+                auth,
+            } => {
                 // Connect to HTTP CONNECT proxy
                 let proxy_addr = format!("{}:{}", address, port);
-                let socket_addr = proxy_addr.to_socket_addrs()
+                let socket_addr = proxy_addr
+                    .to_socket_addrs()
                     .map_err(|e| anyhow!("Failed to resolve HTTP proxy {}: {}", proxy_addr, e))?
                     .next()
                     .ok_or_else(|| anyhow!("No addresses found for HTTP proxy {}", proxy_addr))?;
-                
+
                 let mut stream = TcpStream::connect_timeout(&socket_addr, CONNECT_TIMEOUT)
-                    .map_err(|e| anyhow!("Connection to HTTP proxy {} failed: {}", proxy_addr, e))?;
-                
+                    .map_err(|e| {
+                        anyhow!("Connection to HTTP proxy {} failed: {}", proxy_addr, e)
+                    })?;
+
                 // HTTP CONNECT request
-                Self::http_connect_handshake(&mut stream, &host.hostname, host.port, auth.as_ref())?;
-                
+                Self::http_connect_handshake(
+                    &mut stream,
+                    &host.hostname,
+                    host.port,
+                    auth.as_ref(),
+                )?;
+
                 stream.set_nonblocking(false)?;
-                
-                let mut session = Session::new()
-                    .map_err(|e| anyhow!("Failed to create SSH session: {}", e))?;
-                
+
+                let mut session =
+                    Session::new().map_err(|e| anyhow!("Failed to create SSH session: {}", e))?;
+
                 session.set_tcp_stream(stream.try_clone()?);
-                
-                session.handshake()
+
+                session
+                    .handshake()
                     .map_err(|e| anyhow!("SSH handshake through HTTP proxy failed: {}", e))?;
-                
+
                 crate::ssh::auth::Authenticator::authenticate_any(
-                    &session,
-                    &host,
-                    password,
-                    passphrase,
+                    &session, &host, password, passphrase,
                 )?;
 
                 if !session.authenticated() {
@@ -342,53 +366,65 @@ impl SshConnection {
                     status: ConnectionStatus::Authenticated,
                 })
             }
-            ProxyConnection::ProxyCommand { command, target_host, target_port } => {
+            ProxyConnection::ProxyCommand {
+                command,
+                target_host,
+                target_port,
+            } => {
                 // Execute proxy command and use stdin/stdout as the socket
                 let expanded_command = command
                     .replace("%h", &target_host)
                     .replace("%p", &target_port.to_string());
-                
+
                 // Parse command (simple shell-style splitting)
                 let parts: Vec<&str> = expanded_command.split_whitespace().collect();
                 if parts.is_empty() {
                     return Err(anyhow!("Empty proxy command"));
                 }
-                
+
                 let mut child = std::process::Command::new(parts[0])
                     .args(&parts[1..])
                     .stdin(std::process::Stdio::piped())
                     .stdout(std::process::Stdio::piped())
                     .stderr(std::process::Stdio::null())
                     .spawn()
-                    .map_err(|e| anyhow!("Failed to execute proxy command '{}': {}", expanded_command, e))?;
-                
+                    .map_err(|e| {
+                        anyhow!(
+                            "Failed to execute proxy command '{}': {}",
+                            expanded_command,
+                            e
+                        )
+                    })?;
+
                 // Create a socket pair to bridge the child process to ssh2's TcpStream requirement
                 let (local_stream, remote_stream) = Self::create_socket_pair()?;
-                
+
                 // Get the child's stdin and stdout
-                let child_stdin = child.stdin.take()
+                let child_stdin = child
+                    .stdin
+                    .take()
                     .ok_or_else(|| anyhow!("Failed to get stdin of proxy command"))?;
-                let child_stdout = child.stdout.take()
+                let child_stdout = child
+                    .stdout
+                    .take()
                     .ok_or_else(|| anyhow!("Failed to get stdout of proxy command"))?;
-                
+
                 // Spawn threads to proxy between socket and child process
                 std::thread::spawn(move || {
                     Self::proxy_process_to_stream(child_stdin, child_stdout, remote_stream);
                 });
-                
-                let mut session = Session::new()
-                    .map_err(|e| anyhow!("Failed to create SSH session: {}", e))?;
-                
+
+                let mut session =
+                    Session::new().map_err(|e| anyhow!("Failed to create SSH session: {}", e))?;
+
                 session.set_tcp_stream(local_stream.try_clone()?);
-                
-                session.handshake()
+
+                session
+                    .handshake()
                     .map_err(|e| anyhow!("SSH handshake through proxy command failed: {}", e))?;
-                
+
                 crate::ssh::auth::Authenticator::authenticate_any(
-                    &session,
-                    &host,
-                    password,
-                    passphrase,
+                    &session, &host, password, passphrase,
                 )?;
 
                 if !session.authenticated() {
@@ -411,29 +447,29 @@ impl SshConnection {
     /// Create a socket pair for proxying
     fn create_socket_pair() -> Result<(TcpStream, TcpStream)> {
         use std::net::TcpListener;
-        
+
         // Bind to localhost on a random port
         let listener = TcpListener::bind("127.0.0.1:0")?;
         let addr = listener.local_addr()?;
-        
+
         // Connect to it (localhost, no timeout needed)
         let client = TcpStream::connect_timeout(&addr, Duration::from_secs(5))?;
-        
+
         // Accept the connection
         let (server, _) = listener.accept()?;
-        
+
         Ok((client, server))
     }
 
     /// Proxy data between a channel and a stream
     fn proxy_channel_to_stream(mut channel: ssh2::Channel, mut stream: TcpStream) {
         use std::io::{ErrorKind, Read, Write};
-        
+
         // Set stream to non-blocking
         let _ = stream.set_nonblocking(true);
-        
+
         let mut buf = [0u8; 8192];
-        
+
         loop {
             // Check if channel is closed
             if channel.eof() {
@@ -469,7 +505,7 @@ impl SshConnection {
             // Small sleep to avoid busy-looping
             std::thread::sleep(std::time::Duration::from_micros(100));
         }
-        
+
         let _ = channel.close();
     }
 
@@ -480,16 +516,16 @@ impl SshConnection {
         mut stream: TcpStream,
     ) {
         use std::io::{ErrorKind, Read, Write};
-        
+
         // Set stream to non-blocking
         let _ = stream.set_nonblocking(true);
-        
+
         let mut buf = [0u8; 8192];
-        
+
         // We need to handle bidirectional I/O
         // Spawn a thread for each direction
         let stream_clone = stream.try_clone().unwrap();
-        
+
         // Thread: stream -> child stdin
         let stdin_handle = std::thread::spawn(move || {
             let mut stream = stream_clone;
@@ -510,7 +546,7 @@ impl SshConnection {
                 }
             }
         });
-        
+
         // This thread: child stdout -> stream
         loop {
             match child_stdout.read(&mut buf) {
@@ -527,7 +563,7 @@ impl SshConnection {
                 Err(_) => break,
             }
         }
-        
+
         let _ = stdin_handle.join();
     }
 
@@ -539,7 +575,7 @@ impl SshConnection {
         auth: Option<&(String, String)>,
     ) -> Result<()> {
         use std::io::{Read, Write};
-        
+
         // Step 1: Send greeting with supported auth methods
         let greeting = if auth.is_some() {
             // Support no-auth (0x00) and username/password (0x02)
@@ -550,15 +586,15 @@ impl SshConnection {
         };
         stream.write_all(&greeting)?;
         stream.flush()?;
-        
+
         // Step 2: Read server's chosen auth method
         let mut response = [0u8; 2];
         stream.read_exact(&mut response)?;
-        
+
         if response[0] != 0x05 {
             return Err(anyhow!("Invalid SOCKS5 version in response"));
         }
-        
+
         match response[1] {
             0x00 => {
                 // No authentication required
@@ -573,25 +609,30 @@ impl SshConnection {
                     auth_request.extend(password.as_bytes());
                     stream.write_all(&auth_request)?;
                     stream.flush()?;
-                    
+
                     let mut auth_response = [0u8; 2];
                     stream.read_exact(&mut auth_response)?;
-                    
+
                     if auth_response[1] != 0x00 {
                         return Err(anyhow!("SOCKS5 authentication failed"));
                     }
                 } else {
-                    return Err(anyhow!("SOCKS5 proxy requires authentication but none provided"));
+                    return Err(anyhow!(
+                        "SOCKS5 proxy requires authentication but none provided"
+                    ));
                 }
             }
             0xFF => {
                 return Err(anyhow!("SOCKS5 proxy rejected all authentication methods"));
             }
             _ => {
-                return Err(anyhow!("SOCKS5 proxy requires unsupported authentication method: {}", response[1]));
+                return Err(anyhow!(
+                    "SOCKS5 proxy requires unsupported authentication method: {}",
+                    response[1]
+                ));
             }
         }
-        
+
         // Step 3: Send connect request
         let mut request = vec![
             0x05, // Version
@@ -605,15 +646,15 @@ impl SshConnection {
         request.push((target_port & 0xFF) as u8);
         stream.write_all(&request)?;
         stream.flush()?;
-        
+
         // Step 4: Read connect response
         let mut connect_response = [0u8; 4];
         stream.read_exact(&mut connect_response)?;
-        
+
         if connect_response[0] != 0x05 {
             return Err(anyhow!("Invalid SOCKS5 version in connect response"));
         }
-        
+
         if connect_response[1] != 0x00 {
             let error_msg = match connect_response[1] {
                 0x01 => "general SOCKS server failure",
@@ -628,7 +669,7 @@ impl SshConnection {
             };
             return Err(anyhow!("SOCKS5 connect failed: {}", error_msg));
         }
-        
+
         // Read and discard the bound address
         match connect_response[3] {
             0x01 => {
@@ -652,7 +693,7 @@ impl SshConnection {
                 return Err(anyhow!("SOCKS5 unsupported address type in response"));
             }
         }
-        
+
         Ok(())
     }
 
@@ -664,7 +705,7 @@ impl SshConnection {
         user_id: Option<&str>,
     ) -> Result<()> {
         use std::io::{Read, Write};
-        
+
         // SOCKS4a request format:
         // 1 byte: version (0x04)
         // 1 byte: command (0x01 = CONNECT)
@@ -672,38 +713,43 @@ impl SshConnection {
         // 4 bytes: IP address (0.0.0.x for SOCKS4a to indicate domain follows)
         // variable: user ID (null-terminated)
         // variable: domain name (null-terminated, only for SOCKS4a)
-        
+
         let mut request = vec![
             0x04, // Version
             0x01, // Command: CONNECT
             (target_port >> 8) as u8,
             (target_port & 0xFF) as u8,
-            0x00, 0x00, 0x00, 0x01, // Invalid IP for SOCKS4a (domain follows)
+            0x00,
+            0x00,
+            0x00,
+            0x01, // Invalid IP for SOCKS4a (domain follows)
         ];
-        
+
         // Add user ID (null-terminated)
         if let Some(uid) = user_id {
             request.extend(uid.as_bytes());
         }
         request.push(0x00); // Null terminator for user ID
-        
+
         // Add domain name (null-terminated) for SOCKS4a
         request.extend(target_host.as_bytes());
         request.push(0x00); // Null terminator for domain
-        
+
         stream.write_all(&request)?;
         stream.flush()?;
-        
+
         // Read response (8 bytes)
         let mut response = [0u8; 8];
         stream.read_exact(&mut response)?;
-        
+
         // Check response code (byte 1)
         match response[1] {
             0x5A => Ok(()), // Request granted
             0x5B => Err(anyhow!("SOCKS4 request rejected or failed")),
             0x5C => Err(anyhow!("SOCKS4 request failed: client not running identd")),
-            0x5D => Err(anyhow!("SOCKS4 request failed: identd could not confirm user")),
+            0x5D => Err(anyhow!(
+                "SOCKS4 request failed: identd could not confirm user"
+            )),
             _ => Err(anyhow!("SOCKS4 unknown response code: {}", response[1])),
         }
     }
@@ -716,13 +762,13 @@ impl SshConnection {
         auth: Option<&(String, String)>,
     ) -> Result<()> {
         use std::io::{BufRead, BufReader, Write};
-        
+
         // Build CONNECT request
         let mut request = format!(
             "CONNECT {}:{} HTTP/1.1\r\nHost: {}:{}\r\n",
             target_host, target_port, target_host, target_port
         );
-        
+
         // Add Proxy-Authorization header if credentials provided
         if let Some((username, password)) = auth {
             let credentials = format!("{}:{}", username, password);
@@ -732,33 +778,35 @@ impl SshConnection {
             );
             request.push_str(&format!("Proxy-Authorization: Basic {}\r\n", encoded));
         }
-        
+
         request.push_str("\r\n");
-        
+
         stream.write_all(request.as_bytes())?;
         stream.flush()?;
-        
+
         // Read response
         let mut reader = BufReader::new(stream.try_clone()?);
         let mut status_line = String::new();
         reader.read_line(&mut status_line)?;
-        
+
         // Parse status line (e.g., "HTTP/1.1 200 Connection established")
         let parts: Vec<&str> = status_line.split_whitespace().collect();
         if parts.len() < 2 {
             return Err(anyhow!("Invalid HTTP response from proxy"));
         }
-        
-        let status_code: u16 = parts[1].parse()
+
+        let status_code: u16 = parts[1]
+            .parse()
             .map_err(|_| anyhow!("Invalid HTTP status code from proxy"))?;
-        
+
         if status_code != 200 {
-            return Err(anyhow!("HTTP proxy returned status {}: {}", 
-                status_code, 
+            return Err(anyhow!(
+                "HTTP proxy returned status {}: {}",
+                status_code,
                 parts.get(2..).map(|p| p.join(" ")).unwrap_or_default()
             ));
         }
-        
+
         // Read and discard headers until empty line
         loop {
             let mut line = String::new();
@@ -767,10 +815,9 @@ impl SshConnection {
                 break;
             }
         }
-        
+
         Ok(())
     }
-
 
     /// Get a reference to the SSH session
     pub fn session(&self) -> &Session {
@@ -779,15 +826,19 @@ impl SshConnection {
 
     /// Open an interactive shell channel
     pub fn open_shell(&mut self, cols: u32, rows: u32) -> Result<ssh2::Channel> {
-        let mut channel = self.session.channel_session()
+        let mut channel = self
+            .session
+            .channel_session()
             .map_err(|e| anyhow!("Failed to open channel: {}", e))?;
-        
+
         // Request PTY
-        channel.request_pty("xterm-256color", None, Some((cols, rows, 0, 0)))
+        channel
+            .request_pty("xterm-256color", None, Some((cols, rows, 0, 0)))
             .map_err(|e| anyhow!("Failed to request PTY: {}", e))?;
 
         // Request shell
-        channel.shell()
+        channel
+            .shell()
             .map_err(|e| anyhow!("Failed to request shell: {}", e))?;
 
         // Set session to non-blocking for async I/O
@@ -798,7 +849,8 @@ impl SshConnection {
 
     /// Open a direct TCP/IP channel (for port forwarding)
     pub fn open_direct_tcpip(&self, host: &str, port: u16) -> Result<ssh2::Channel> {
-        self.session.channel_direct_tcpip(host, port, None)
+        self.session
+            .channel_direct_tcpip(host, port, None)
             .map_err(|e| anyhow!("Failed to open direct-tcpip channel: {}", e))
     }
 
@@ -810,13 +862,15 @@ impl SshConnection {
         // Since SFTP sessions should use dedicated connections (not shared with shell),
         // we keep the session in blocking mode for all SFTP operations to work correctly
         self.session.set_blocking(true);
-        
-        let sftp = self.session.sftp()
+
+        let sftp = self
+            .session
+            .sftp()
             .map_err(|e| anyhow!("Failed to open SFTP: {}", e))?;
-        
+
         // Keep in blocking mode - SFTP operations (readdir, create, read, write)
         // all require blocking mode to work correctly
-        
+
         Ok(sftp)
     }
 
@@ -827,23 +881,27 @@ impl SshConnection {
 
     /// Execute a command and return output
     pub fn exec(&self, command: &str) -> Result<String> {
-        let mut channel = self.session.channel_session()
+        let mut channel = self
+            .session
+            .channel_session()
             .map_err(|e| anyhow!("Failed to open channel: {}", e))?;
-        
-        channel.exec(command)
+
+        channel
+            .exec(command)
             .map_err(|e| anyhow!("Failed to execute command: {}", e))?;
-        
+
         let mut output = String::new();
         channel.read_to_string(&mut output)?;
-        
+
         channel.wait_close()?;
-        
+
         Ok(output)
     }
 
     /// Close the connection
     pub fn close(self) -> Result<()> {
-        self.session.disconnect(None, "Goodbye", None)
+        self.session
+            .disconnect(None, "Goodbye", None)
             .map_err(|e| anyhow!("Failed to disconnect: {}", e))
     }
 }

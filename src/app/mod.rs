@@ -3,6 +3,9 @@
 mod events;
 mod state;
 
-pub use events::{AppEvent, EventHandler, ConnectionResultData};
-pub use state::{App, AppState, View, RenderState, SessionInfo, ActiveChannel};
-pub use state::{FileBrowserSnapshot, FilePaneSnapshot, FileEntrySnapshot, TransferQueueSnapshot, TransferItemSnapshot};
+pub use events::{AppEvent, ConnectionResultData, EventHandler};
+pub use state::{ActiveChannel, App, AppState, RenderState, SessionInfo, View};
+pub use state::{
+    FileBrowserSnapshot, FileEntrySnapshot, FilePaneSnapshot, TransferItemSnapshot,
+    TransferQueueSnapshot,
+};

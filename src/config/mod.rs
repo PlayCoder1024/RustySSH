@@ -128,11 +128,11 @@ impl Config {
     /// Note: Only JumpHost proxies form chains; other proxy types connect directly
     pub fn resolve_proxy_chain(&self, host: &HostConfig) -> Vec<HostConfig> {
         let mut chain = Vec::new();
-        
+
         // Build the chain recursively (collect jump hosts first)
         let mut jump_hosts = Vec::new();
         let mut current = host;
-        
+
         // Only follow the chain for JumpHost proxy types
         while let Some(ProxyConfig::JumpHost { host: ref jump_ref }) = current.proxy {
             if let Some(jump_host) = self.resolve_jump_host(jump_ref) {
@@ -146,14 +146,14 @@ impl Config {
                 break; // Jump host not found
             }
         }
-        
+
         // Reverse to get connection order (outermost jump host first)
         jump_hosts.reverse();
         chain.extend(jump_hosts);
-        
+
         // Add the target host last
         chain.push(host.clone());
-        
+
         chain
     }
 

@@ -25,9 +25,7 @@ pub enum TunnelType {
         local_port: u16,
     },
     /// Dynamic SOCKS proxy (-D)
-    Dynamic {
-        bind_addr: SocketAddr,
-    },
+    Dynamic { bind_addr: SocketAddr },
 }
 
 /// Tunnel statistics
@@ -75,10 +73,18 @@ impl Tunnel {
     /// Get description of the tunnel
     pub fn description(&self) -> String {
         match &self.tunnel_type {
-            TunnelType::Local { bind_addr, remote_host, remote_port } => {
+            TunnelType::Local {
+                bind_addr,
+                remote_host,
+                remote_port,
+            } => {
                 format!("L:{} → {}:{}", bind_addr, remote_host, remote_port)
             }
-            TunnelType::Remote { remote_addr, local_host, local_port } => {
+            TunnelType::Remote {
+                remote_addr,
+                local_host,
+                local_port,
+            } => {
                 format!("R:{} → {}:{}", remote_addr, local_host, local_port)
             }
             TunnelType::Dynamic { bind_addr } => {

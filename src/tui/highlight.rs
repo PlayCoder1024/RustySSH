@@ -14,19 +14,19 @@ pub struct TerminalHighlightConfig {
     /// Enable terminal highlighting
     #[serde(default = "default_true")]
     pub enabled: bool,
-    
+
     /// Success keywords (displayed in green)
     #[serde(default = "default_success_keywords")]
     pub success_keywords: Vec<String>,
-    
+
     /// Error keywords (displayed in red)
     #[serde(default = "default_error_keywords")]
     pub error_keywords: Vec<String>,
-    
+
     /// Warning keywords (displayed in yellow)
     #[serde(default = "default_warning_keywords")]
     pub warning_keywords: Vec<String>,
-    
+
     /// Info keywords (displayed in blue)
     #[serde(default = "default_info_keywords")]
     pub info_keywords: Vec<String>,
@@ -179,9 +179,13 @@ enum KeywordCategory {
 }
 
 /// Highlight a single line of terminal output
-/// 
+///
 /// Scans for keywords and returns a styled Line with colored spans
-pub fn highlight_line<'a>(line: &'a str, theme: &Theme, config: &TerminalHighlightConfig) -> Line<'a> {
+pub fn highlight_line<'a>(
+    line: &'a str,
+    theme: &Theme,
+    config: &TerminalHighlightConfig,
+) -> Line<'a> {
     if !config.enabled || line.is_empty() {
         return Line::from(Span::styled(line, theme.text()));
     }
@@ -258,21 +262,29 @@ fn find_keyword_matches(
 ) {
     let keyword_len = keyword.len();
     let text_len = text.len();
-    
+
     let mut search_start = 0;
     while search_start < text_len {
         if let Some(pos) = text[search_start..].find(keyword) {
             let abs_pos = search_start + pos;
             let end_pos = abs_pos + keyword_len;
-            
+
             // Check word boundaries
-            let start_ok = abs_pos == 0 || !text.chars().nth(abs_pos - 1).map_or(false, |c| c.is_alphanumeric() || c == '_');
-            let end_ok = end_pos >= text_len || !text.chars().nth(end_pos).map_or(false, |c| c.is_alphanumeric() || c == '_');
-            
+            let start_ok = abs_pos == 0
+                || !text
+                    .chars()
+                    .nth(abs_pos - 1)
+                    .map_or(false, |c| c.is_alphanumeric() || c == '_');
+            let end_ok = end_pos >= text_len
+                || !text
+                    .chars()
+                    .nth(end_pos)
+                    .map_or(false, |c| c.is_alphanumeric() || c == '_');
+
             if start_ok && end_ok {
                 matches.push((abs_pos, end_pos, category));
             }
-            
+
             search_start = end_pos;
         } else {
             break;
@@ -281,36 +293,59 @@ fn find_keyword_matches(
 }
 
 /// Highlight keywords in an already-styled Line while preserving existing ANSI/VT100 colors
-/// 
+///
 /// This function takes a Line that already has styling from VT100 parsing (shell prompts,
 /// directory colors, etc.) and applies keyword highlighting on top without destroying
 /// the existing styles.
-pub fn highlight_styled_line(line: Line<'static>, config: &TerminalHighlightConfig) -> Line<'static> {
+pub fn highlight_styled_line(
+    line: Line<'static>,
+    config: &TerminalHighlightConfig,
+) -> Line<'static> {
     if !config.enabled {
         return line;
     }
 
     // Extract full text content from line for keyword matching
     let full_text: String = line.spans.iter().map(|s| s.content.as_ref()).collect();
-    
+
     if full_text.is_empty() {
         return line;
     }
 
     // Find all keyword matches in the full text
     let mut keyword_matches: Vec<(usize, usize, KeywordCategory)> = Vec::new();
-    
+
     for keyword in &config.success_keywords {
-        find_keyword_matches(&full_text, keyword, KeywordCategory::Success, &mut keyword_matches);
+        find_keyword_matches(
+            &full_text,
+            keyword,
+            KeywordCategory::Success,
+            &mut keyword_matches,
+        );
     }
     for keyword in &config.error_keywords {
-        find_keyword_matches(&full_text, keyword, KeywordCategory::Error, &mut keyword_matches);
+        find_keyword_matches(
+            &full_text,
+            keyword,
+            KeywordCategory::Error,
+            &mut keyword_matches,
+        );
     }
     for keyword in &config.warning_keywords {
-        find_keyword_matches(&full_text, keyword, KeywordCategory::Warning, &mut keyword_matches);
+        find_keyword_matches(
+            &full_text,
+            keyword,
+            KeywordCategory::Warning,
+            &mut keyword_matches,
+        );
     }
     for keyword in &config.info_keywords {
-        find_keyword_matches(&full_text, keyword, KeywordCategory::Info, &mut keyword_matches);
+        find_keyword_matches(
+            &full_text,
+            keyword,
+            KeywordCategory::Info,
+            &mut keyword_matches,
+        );
     }
 
     if keyword_matches.is_empty() {
@@ -337,13 +372,14 @@ pub fn highlight_styled_line(line: Line<'static>, config: &TerminalHighlightConf
         let span_len = span_text.len();
         let span_start = char_offset;
         let span_end = char_offset + span_len;
-        
+
         // Find matches that overlap with this span
-        let overlapping: Vec<_> = filtered_matches.iter()
+        let overlapping: Vec<_> = filtered_matches
+            .iter()
             .filter(|(start, end, _)| *start < span_end && *end > span_start)
             .cloned()
             .collect();
-        
+
         if overlapping.is_empty() {
             // No matches in this span, keep original style
             new_spans.push(span);
@@ -354,7 +390,7 @@ pub fn highlight_styled_line(line: Line<'static>, config: &TerminalHighlightConf
                 // Convert to span-local offsets
                 let local_start = match_start.saturating_sub(span_start);
                 let local_end = (match_end - span_start).min(span_len);
-                
+
                 // Add text before match with original style
                 if local_start > pos {
                     new_spans.push(Span::styled(
@@ -362,7 +398,7 @@ pub fn highlight_styled_line(line: Line<'static>, config: &TerminalHighlightConf
                         span.style,
                     ));
                 }
-                
+
                 // Add matched text with keyword color, preserving modifiers
                 if local_start < span_len && local_end > local_start {
                     let keyword_color = match category {
@@ -372,28 +408,25 @@ pub fn highlight_styled_line(line: Line<'static>, config: &TerminalHighlightConf
                         KeywordCategory::Info => Color::Cyan,
                         KeywordCategory::None => Color::Reset,
                     };
-                    
+
                     // Apply keyword color but preserve other style attributes (bold, etc)
                     let highlighted_style = span.style.fg(keyword_color);
-                    
+
                     new_spans.push(Span::styled(
                         span_text[local_start.max(pos)..local_end].to_string(),
                         highlighted_style,
                     ));
                 }
-                
+
                 pos = local_end;
             }
-            
+
             // Add remaining text with original style
             if pos < span_len {
-                new_spans.push(Span::styled(
-                    span_text[pos..].to_string(),
-                    span.style,
-                ));
+                new_spans.push(Span::styled(span_text[pos..].to_string(), span.style));
             }
         }
-        
+
         char_offset = span_end;
     }
 

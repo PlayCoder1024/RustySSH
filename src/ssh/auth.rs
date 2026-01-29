@@ -23,14 +23,22 @@ impl Authenticator {
                     .userauth_password(&host.username, password)
                     .map_err(|e| anyhow!("Password auth failed: {}", e))
             }
-            AuthMethod::KeyFile { path, passphrase_required } => {
-                let passphrase = if *passphrase_required { passphrase } else { None };
+            AuthMethod::KeyFile {
+                path,
+                passphrase_required,
+            } => {
+                let passphrase = if *passphrase_required {
+                    passphrase
+                } else {
+                    None
+                };
                 Self::auth_with_key(session, &host.username, path, passphrase)
             }
-            AuthMethod::Agent => {
-                Self::auth_with_agent(session, &host.username)
-            }
-            AuthMethod::Certificate { cert_path: _, key_path } => {
+            AuthMethod::Agent => Self::auth_with_agent(session, &host.username),
+            AuthMethod::Certificate {
+                cert_path: _,
+                key_path,
+            } => {
                 // For now, treat as key file auth
                 Self::auth_with_key(session, &host.username, key_path, passphrase)
             }
@@ -50,33 +58,33 @@ impl Authenticator {
         } else {
             None
         };
-        
+
         session
             .userauth_pubkey_file(username, pub_key, key_path, passphrase)
             .map_err(|e| anyhow!("Key auth failed: {}", e))
     }
 
     /// Authenticate with SSH agent
-    fn auth_with_agent(
-        session: &Session,
-        username: &str,
-    ) -> Result<()> {
-        let mut agent = session.agent()
+    fn auth_with_agent(session: &Session, username: &str) -> Result<()> {
+        let mut agent = session
+            .agent()
             .map_err(|e| anyhow!("Failed to connect to SSH agent: {}", e))?;
-        
-        agent.connect()
+
+        agent
+            .connect()
             .map_err(|e| anyhow!("Failed to connect to agent: {}", e))?;
-        
-        agent.list_identities()
+
+        agent
+            .list_identities()
             .map_err(|e| anyhow!("Failed to list agent identities: {}", e))?;
-        
+
         // Try each identity
         for identity in agent.identities()? {
             if agent.userauth(username, &identity).is_ok() {
                 return Ok(());
             }
         }
-        
+
         Err(anyhow!("No agent identity authenticated successfully"))
     }
 
@@ -88,9 +96,8 @@ impl Authenticator {
         passphrase: Option<&str>,
     ) -> Result<()> {
         // Get available auth methods
-        let methods = session.auth_methods(&host.username)
-            .unwrap_or_default();
-        
+        let methods = session.auth_methods(&host.username).unwrap_or_default();
+
         tracing::debug!("Available auth methods: {}", methods);
 
         // Try agent first (most convenient)

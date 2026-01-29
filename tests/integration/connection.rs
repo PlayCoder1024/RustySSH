@@ -53,7 +53,10 @@ async fn test_connection_to_invalid_host() {
     };
 
     let result = SshConnection::connect(host_config, Some("pass"), None);
-    assert!(result.is_err(), "Should fail to connect to non-existent server");
+    assert!(
+        result.is_err(),
+        "Should fail to connect to non-existent server"
+    );
 }
 
 /// Test multiple parallel connections to different Docker servers (requires Docker)
@@ -104,8 +107,8 @@ async fn test_connection_pool() {
 async fn test_exec_command() {
     let host_config = create_docker_host_config_1();
 
-    let conn = SshConnection::connect(host_config, Some(TEST_PASSWORD), None)
-        .expect("Should connect");
+    let conn =
+        SshConnection::connect(host_config, Some(TEST_PASSWORD), None).expect("Should connect");
 
     let output = conn.exec("echo hello").expect("Should execute command");
     assert!(output.contains("hello"), "Output should contain 'hello'");

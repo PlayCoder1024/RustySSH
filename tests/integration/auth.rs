@@ -107,7 +107,10 @@ fn test_host_config_creation() {
     // Test default
     let default = HostConfig::default();
     assert_eq!(default.port, 22);
-    assert!(matches!(default.auth, rustyssh::config::AuthMethod::Password));
+    assert!(matches!(
+        default.auth,
+        rustyssh::config::AuthMethod::Password
+    ));
 
     // Test new constructor
     let host = HostConfig::new("my-server", "192.168.1.100", "admin");

@@ -4,10 +4,10 @@ use super::{AppEvent, EventHandler};
 use crate::config::{Config, HostConfig};
 use crate::credentials::CredentialManager;
 use crate::sftp::{FileBrowser, SftpSession, SftpSessionManager, TransferQueue};
-use crate::ssh::{ConnectionPool, SessionManager, SshConnection, ProxyConnection};
-use crate::tui::{Icons, Theme, Tui};
-use crate::tui::terminal_render::render_screen_to_lines_with_selection;
+use crate::ssh::{ConnectionPool, ProxyConnection, SessionManager, SshConnection};
 use crate::tui::highlight::{highlight_styled_line, TerminalHighlightConfig};
+use crate::tui::terminal_render::render_screen_to_lines_with_selection;
+use crate::tui::{Icons, Theme, Tui};
 use anyhow::{anyhow, Result};
 use crossterm::event::{KeyCode, KeyModifiers, MouseEvent, MouseEventKind};
 use std::collections::HashMap;
@@ -215,7 +215,11 @@ pub struct App {
     /// When connection attempt started (for spinner animation)
     pub connection_start_time: Option<Instant>,
     /// Pending connection task handle
-    pending_connection: Option<tokio::task::JoinHandle<Result<(SshConnection, std::collections::HashMap<Uuid, String>), anyhow::Error>>>,
+    pending_connection: Option<
+        tokio::task::JoinHandle<
+            Result<(SshConnection, std::collections::HashMap<Uuid, String>), anyhow::Error>,
+        >,
+    >,
     /// Host ID currently being connected
     pending_connection_host_id: Option<Uuid>,
     /// Hosts to save passwords for after successful connection
@@ -252,7 +256,7 @@ impl App {
     /// Create a new application instance
     pub async fn new() -> Result<Self> {
         let config = Config::load().await?;
-        
+
         // Load theme from config setting
         let theme = match config.settings.ui.theme.as_str() {
             "gruvbox-dark" => crate::tui::gruvbox_dark(),
@@ -264,7 +268,7 @@ impl App {
         let tui = Tui::new()?;
         let events = EventHandler::new(Duration::from_millis(50));
         let credentials = CredentialManager::new().await?;
-        
+
         // Initialize clipboard (ignore error, will retry on use if needed)
         let clipboard = arboard::Clipboard::new().ok();
 
@@ -373,7 +377,8 @@ impl App {
                             let is_active = Some(s.id) == self.active_session;
                             let styled_lines = if is_active {
                                 let selection = s.get_selection_for_render();
-                                let raw_lines = render_screen_to_lines_with_selection(s.screen(), selection);
+                                let raw_lines =
+                                    render_screen_to_lines_with_selection(s.screen(), selection);
                                 raw_lines
                                     .into_iter()
                                     .map(|line| highlight_styled_line(line, &highlight_config))
@@ -388,7 +393,11 @@ impl App {
                                 styled_lines,
                                 cursor_position: s.cursor_position(),
                                 cursor_visible: s.cursor_visible(),
-                                selection: if is_active { s.get_selection_for_render() } else { None },
+                                selection: if is_active {
+                                    s.get_selection_for_render()
+                                } else {
+                                    None
+                                },
                             }
                         })
                         .collect()
@@ -402,23 +411,33 @@ impl App {
                     FileBrowserSnapshot {
                         left: FilePaneSnapshot {
                             path: browser.left.path.display().to_string(),
-                            entries: browser.left.filtered_entries().iter().map(|e| FileEntrySnapshot {
-                                name: e.name.clone(),
-                                is_dir: e.is_dir,
-                                size_display: e.size_display(),
-                                selected: e.selected,
-                            }).collect(),
+                            entries: browser
+                                .left
+                                .filtered_entries()
+                                .iter()
+                                .map(|e| FileEntrySnapshot {
+                                    name: e.name.clone(),
+                                    is_dir: e.is_dir,
+                                    size_display: e.size_display(),
+                                    selected: e.selected,
+                                })
+                                .collect(),
                             cursor: browser.left.cursor,
                             is_remote: browser.left.is_remote,
                         },
                         right: FilePaneSnapshot {
                             path: browser.right.path.display().to_string(),
-                            entries: browser.right.filtered_entries().iter().map(|e| FileEntrySnapshot {
-                                name: e.name.clone(),
-                                is_dir: e.is_dir,
-                                size_display: e.size_display(),
-                                selected: e.selected,
-                            }).collect(),
+                            entries: browser
+                                .right
+                                .filtered_entries()
+                                .iter()
+                                .map(|e| FileEntrySnapshot {
+                                    name: e.name.clone(),
+                                    is_dir: e.is_dir,
+                                    size_display: e.size_display(),
+                                    selected: e.selected,
+                                })
+                                .collect(),
                             cursor: browser.right.cursor,
                             is_remote: browser.right.is_remote,
                         },
@@ -428,16 +447,25 @@ impl App {
                 transfer_info: TransferQueueSnapshot {
                     pending_count: self.transfer_queue.pending().len(),
                     active_count: self.transfer_queue.active().len(),
-                    active_transfers: self.transfer_queue.active().iter().map(|t| {
-                        use crate::sftp::TransferDirection;
-                        TransferItemSnapshot {
-                            filename: t.source.file_name().map(|n| n.to_string_lossy().to_string()).unwrap_or_default(),
-                            progress: t.progress(),
-                            speed_display: t.speed_display(),
-                            eta_display: t.eta_display(),
-                            is_upload: t.direction == TransferDirection::Upload,
-                        }
-                    }).collect(),
+                    active_transfers: self
+                        .transfer_queue
+                        .active()
+                        .iter()
+                        .map(|t| {
+                            use crate::sftp::TransferDirection;
+                            TransferItemSnapshot {
+                                filename: t
+                                    .source
+                                    .file_name()
+                                    .map(|n| n.to_string_lossy().to_string())
+                                    .unwrap_or_default(),
+                                progress: t.progress(),
+                                speed_display: t.speed_display(),
+                                eta_display: t.eta_display(),
+                                is_upload: t.direction == TransferDirection::Upload,
+                            }
+                        })
+                        .collect(),
                 },
                 session_order: self.session_order.clone(),
                 session_list_visible: self.session_list_visible,
@@ -475,7 +503,7 @@ impl App {
                         ratatui::layout::Constraint::Length(1), // Status bar
                     ])
                     .split(size);
-                
+
                 // Session view layout: tabs + terminal
                 let session_chunks = ratatui::layout::Layout::default()
                     .direction(ratatui::layout::Direction::Vertical)
@@ -484,7 +512,7 @@ impl App {
                         ratatui::layout::Constraint::Min(1),    // Terminal
                     ])
                     .split(chunks[0]);
-                
+
                 // Terminal block inner area (accounting for borders)
                 let terminal_inner = ratatui::layout::Rect {
                     x: session_chunks[1].x + 1,
@@ -501,7 +529,7 @@ impl App {
             if let Some(event) = self.events.next().await {
                 let is_mouse = matches!(event, AppEvent::Mouse(_));
                 self.handle_event(event).await?;
-                
+
                 // Process pending events (batch processing)
                 // Only do this for mouse events to avoid input lag/conflicts with key operations (like paste)
                 if is_mouse {
@@ -539,18 +567,20 @@ impl App {
                         false
                     };
 
-                    // Check for Copy: 
+                    // Check for Copy:
                     // 1. Ctrl+Shift+c/C
                     // 2. Ctrl+C (uppercase implies shift)
                     // 3. Ctrl+c (lowercase) IF selection is active (Smart Copy)
-                    let is_copy = (key.modifiers.contains(KeyModifiers::SHIFT) && matches!(key.code, KeyCode::Char('c') | KeyCode::Char('C')))
+                    let is_copy = (key.modifiers.contains(KeyModifiers::SHIFT)
+                        && matches!(key.code, KeyCode::Char('c') | KeyCode::Char('C')))
                         || (key.code == KeyCode::Char('C'))
                         || (has_selection && key.code == KeyCode::Char('c'));
-                    
+
                     // Check for Paste: Ctrl+Shift+v/V OR Ctrl+V (uppercase implies shift)
-                    let is_paste = (key.modifiers.contains(KeyModifiers::SHIFT) && matches!(key.code, KeyCode::Char('v') | KeyCode::Char('V')))
+                    let is_paste = (key.modifiers.contains(KeyModifiers::SHIFT)
+                        && matches!(key.code, KeyCode::Char('v') | KeyCode::Char('V')))
                         || (key.code == KeyCode::Char('V'));
-                        
+
                     if is_copy {
                         // Copy selected text to clipboard
                         self.copy_selection_to_clipboard();
@@ -562,10 +592,10 @@ impl App {
                         return Ok(());
                     }
                 }
-                
+
                 // Handle Ctrl+F for find (in session view)
-                if self.view == View::Session 
-                    && key.modifiers.contains(KeyModifiers::CONTROL) 
+                if self.view == View::Session
+                    && key.modifiers.contains(KeyModifiers::CONTROL)
                     && !key.modifiers.contains(KeyModifiers::SHIFT)
                     && key.code == KeyCode::Char('f')
                 {
@@ -575,13 +605,13 @@ impl App {
                     self.find_match_index = 0;
                     return Ok(());
                 }
-                
+
                 // Handle find overlay input
                 if self.view == View::Session && self.find_overlay_visible {
                     self.handle_find_overlay_key(key).await?;
                     return Ok(());
                 }
-                
+
                 // Handle Ctrl+C/Q - only quit from non-session views
                 // In session view, forward Ctrl+C to remote server
                 if key.modifiers.contains(KeyModifiers::CONTROL) {
@@ -631,7 +661,9 @@ impl App {
                 if let Some(session_id) = self.active_session {
                     let adjusted_cols = w.saturating_sub(2);
                     let adjusted_rows = h.saturating_sub(6);
-                    self.sessions.resize_session(session_id, adjusted_cols, adjusted_rows).await?;
+                    self.sessions
+                        .resize_session(session_id, adjusted_cols, adjusted_rows)
+                        .await?;
                 }
             }
             AppEvent::SshData { session_id, data } => {
@@ -643,7 +675,7 @@ impl App {
                 self.sessions.remove(session_id);
                 // Remove from session order
                 self.session_order.retain(|&id| id != session_id);
-                
+
                 if self.active_session == Some(session_id) {
                     // Switch to another session if available
                     if let Some(&next_session) = self.session_order.first() {
@@ -671,7 +703,7 @@ impl App {
                         let host_name = self.connecting_to_host.take().unwrap_or_default();
                         let hosts_to_save = std::mem::take(&mut self.pending_hosts_to_save);
                         self.connection_start_time = None;
-                        
+
                         // Get the result
                         match handle.await {
                             Ok(Ok((connection, passwords_used))) => {
@@ -682,14 +714,13 @@ impl App {
                                     connection,
                                     passwords_used,
                                     hosts_to_save,
-                                ).await?;
+                                )
+                                .await?;
                             }
                             Ok(Err(e)) => {
                                 // Connection failed
-                                self.handle_connection_failure(
-                                    &e.to_string(),
-                                    hosts_to_save,
-                                ).await;
+                                self.handle_connection_failure(&e.to_string(), hosts_to_save)
+                                    .await;
                             }
                             Err(e) => {
                                 // Task panicked or cancelled
@@ -702,7 +733,11 @@ impl App {
             AppEvent::SftpProgress { .. } => {
                 // SFTP progress events handled elsewhere
             }
-            AppEvent::ConnectionResult { host_id: _, host_name, result } => {
+            AppEvent::ConnectionResult {
+                host_id: _,
+                host_name,
+                result,
+            } => {
                 // Legacy event - kept for compatibility
                 match result {
                     Ok(_data) => {
@@ -736,7 +771,7 @@ impl App {
     async fn handle_mouse(&mut self, mouse: MouseEvent) -> Result<()> {
         use crossterm::event::MouseButton;
         use MouseEventKind::*;
-        
+
         match mouse.kind {
             // Mouse button down - start selection
             Down(MouseButton::Left) => {
@@ -745,10 +780,12 @@ impl App {
                         // Convert mouse coordinates to terminal cell position
                         let term_row = mouse.row.saturating_sub(area.y);
                         let term_col = mouse.column.saturating_sub(area.x);
-                        
+
                         // Only start selection if within terminal bounds
-                        if mouse.row >= area.y && mouse.row < area.y + area.height
-                            && mouse.column >= area.x && mouse.column < area.x + area.width
+                        if mouse.row >= area.y
+                            && mouse.row < area.y + area.height
+                            && mouse.column >= area.x
+                            && mouse.column < area.x + area.width
                         {
                             if let Some(session_id) = self.active_session {
                                 if let Some(session) = self.sessions.get_mut(session_id) {
@@ -765,9 +802,15 @@ impl App {
                     if let Some(area) = self.terminal_area {
                         // Convert mouse coordinates to terminal cell position
                         // Clamp to valid bounds
-                        let term_row = mouse.row.saturating_sub(area.y).min(area.height.saturating_sub(1));
-                        let term_col = mouse.column.saturating_sub(area.x).min(area.width.saturating_sub(1));
-                        
+                        let term_row = mouse
+                            .row
+                            .saturating_sub(area.y)
+                            .min(area.height.saturating_sub(1));
+                        let term_col = mouse
+                            .column
+                            .saturating_sub(area.x)
+                            .min(area.width.saturating_sub(1));
+
                         if let Some(session_id) = self.active_session {
                             if let Some(session) = self.sessions.get_mut(session_id) {
                                 if session.is_selecting {
@@ -926,7 +969,8 @@ impl App {
             KeyCode::Enter => {
                 // Select the highlighted result
                 if !self.host_search_results.is_empty() {
-                    let selected_idx = self.host_search_results
+                    let selected_idx = self
+                        .host_search_results
                         .get(self.host_search_selected)
                         .copied()
                         .unwrap_or(0);
@@ -969,7 +1013,7 @@ impl App {
     fn update_host_search_results(&mut self) {
         let query = self.host_search_query.to_lowercase();
         let hosts = self.all_hosts();
-        
+
         if query.is_empty() {
             // Show all hosts when query is empty
             self.host_search_results = (0..hosts.len()).collect();
@@ -988,7 +1032,6 @@ impl App {
         }
     }
 
-
     /// Edit configuration file in external editor
     async fn edit_config(&mut self) -> Result<()> {
         let config_path = Config::config_path();
@@ -997,7 +1040,8 @@ impl App {
         let editor = match crate::utils::detect_editor() {
             Some(ed) => ed,
             None => {
-                self.status_message = Some("No editor found. Set $EDITOR or install nano/vim/vi.".to_string());
+                self.status_message =
+                    Some("No editor found. Set $EDITOR or install nano/vim/vi.".to_string());
                 return Ok(());
             }
         };
@@ -1145,24 +1189,25 @@ impl App {
 
         // Resolve the full proxy chain
         let proxy_chain = self.config.resolve_proxy_chain(&host);
-        
+
         // Collect passwords for all hosts in the chain that need password auth
-        let mut passwords: std::collections::HashMap<uuid::Uuid, String> = std::collections::HashMap::new();
+        let mut passwords: std::collections::HashMap<uuid::Uuid, String> =
+            std::collections::HashMap::new();
         let mut hosts_to_save: Vec<uuid::Uuid> = Vec::new();
-        
+
         // Check if any host in the chain needs password auth
         let hosts_needing_password: Vec<_> = proxy_chain
             .iter()
             .filter(|h| matches!(h.auth, crate::config::AuthMethod::Password))
             .collect();
-        
+
         if !hosts_needing_password.is_empty() {
             // Check if any host wants to remember password (for saving) or has saved password (for retrieval)
-            let any_wants_remember = hosts_needing_password.iter()
-                .any(|h| h.remember_password);
-            let has_any_saved = hosts_needing_password.iter()
+            let any_wants_remember = hosts_needing_password.iter().any(|h| h.remember_password);
+            let has_any_saved = hosts_needing_password
+                .iter()
                 .any(|h| h.remember_password && self.credentials.has_saved_password(h.id));
-            
+
             // Need to setup/unlock master password if:
             // - Any host wants to remember password (for future saving), OR
             // - Any host has a saved password (for retrieval)
@@ -1173,10 +1218,10 @@ impl App {
                     self.events.pause();
                     tokio::time::sleep(Duration::from_millis(50)).await;
                     self.tui.exit()?;
-                    
+
                     println!("\n🔐 First time setup: Create a master password to secure your saved credentials.");
                     println!("   This password encrypts all saved connection passwords.\n");
-                    
+
                     print!("Create master password: ");
                     let _ = std::io::stdout().flush();
                     let master_pwd = match rpassword::read_password() {
@@ -1190,7 +1235,7 @@ impl App {
                             return Ok(());
                         }
                     };
-                    
+
                     print!("Confirm master password: ");
                     let _ = std::io::stdout().flush();
                     let confirm_pwd = match rpassword::read_password() {
@@ -1204,7 +1249,7 @@ impl App {
                             return Ok(());
                         }
                     };
-                    
+
                     if master_pwd != confirm_pwd {
                         std::thread::sleep(std::time::Duration::from_millis(100));
                         self.tui.enter()?;
@@ -1213,16 +1258,17 @@ impl App {
                         self.status_message = Some("Passwords don't match. Try again.".to_string());
                         return Ok(());
                     }
-                    
+
                     if let Err(e) = self.credentials.setup_master_password(&master_pwd) {
                         std::thread::sleep(std::time::Duration::from_millis(100));
                         self.tui.enter()?;
                         self.events.resume();
                         self.tui.clear()?;
-                        self.status_message = Some(format!("Failed to setup master password: {}", e));
+                        self.status_message =
+                            Some(format!("Failed to setup master password: {}", e));
                         return Ok(());
                     }
-                    
+
                     println!("\n✅ Master password created successfully!\n");
                     std::thread::sleep(std::time::Duration::from_millis(500));
                     self.tui.enter()?;
@@ -1233,7 +1279,7 @@ impl App {
                     self.events.pause();
                     tokio::time::sleep(Duration::from_millis(50)).await;
                     self.tui.exit()?;
-                    
+
                     print!("\n🔐 Master password: ");
                     let _ = std::io::stdout().flush();
                     let master_pwd = match rpassword::read_password() {
@@ -1247,7 +1293,7 @@ impl App {
                             return Ok(());
                         }
                     };
-                    
+
                     match self.credentials.unlock(&master_pwd) {
                         Ok(true) => {
                             println!("✅ Unlocked\n");
@@ -1270,13 +1316,13 @@ impl App {
                             return Ok(());
                         }
                     }
-                    
+
                     self.tui.enter()?;
                     self.events.resume();
                     self.tui.clear()?;
                 }
             }
-            
+
             // Now collect passwords - try saved passwords first
             let mut need_prompt = false;
             for host_config in &hosts_needing_password {
@@ -1289,31 +1335,34 @@ impl App {
                 }
                 need_prompt = true;
             }
-            
+
             if need_prompt {
                 // Exit TUI mode to prompt for passwords
                 self.events.pause();
                 tokio::time::sleep(Duration::from_millis(50)).await;
                 self.tui.exit()?;
-                
+
                 println!(); // Newline for cleaner output
-                
+
                 for host_config in &hosts_needing_password {
                     // Skip if we already have a saved password
                     if passwords.contains_key(&host_config.id) {
                         continue;
                     }
-                    
+
                     // Show context for proxy chain
                     let context = if host_config.id == host.id {
                         "target".to_string()
                     } else {
                         "jump host".to_string()
                     };
-                    
-                    print!("Password for {}@{} ({}): ", host_config.username, host_config.hostname, context);
+
+                    print!(
+                        "Password for {}@{} ({}): ",
+                        host_config.username, host_config.hostname, context
+                    );
                     let _ = std::io::stdout().flush();
-                    
+
                     match rpassword::read_password() {
                         Ok(pwd) => {
                             passwords.insert(host_config.id, pwd);
@@ -1333,7 +1382,7 @@ impl App {
                         }
                     }
                 }
-                
+
                 // Re-enter TUI mode
                 std::thread::sleep(std::time::Duration::from_millis(100));
                 self.tui.enter()?;
@@ -1351,14 +1400,14 @@ impl App {
         // Spawn connection in background (non-blocking)
         let handle = tokio::task::spawn_blocking(move || {
             use crate::config::ProxyConfig;
-            
+
             // Connect through the proxy chain
             let mut prev_connection: Option<SshConnection> = None;
-            
+
             for (i, chain_host) in proxy_chain.iter().enumerate() {
                 let is_last = i == proxy_chain.len() - 1;
                 let password = passwords.get(&chain_host.id).map(|s| s.as_str());
-                
+
                 // Determine the proxy connection type
                 let proxy = if let Some(conn) = prev_connection.take() {
                     // We have a previous connection from jump host chain - tunnel through it
@@ -1368,33 +1417,41 @@ impl App {
                 } else if is_last {
                     // For the final host, check if it has a non-JumpHost proxy config
                     match &chain_host.proxy {
-                        Some(ProxyConfig::Socks5 { address, port, username, password: proxy_pwd }) => {
-                            ProxyConnection::Socks5 {
-                                address: address.clone(),
-                                port: *port,
-                                auth: match (username, proxy_pwd) {
-                                    (Some(u), Some(p)) => Some((u.clone(), p.clone())),
-                                    _ => None,
-                                },
-                            }
-                        }
-                        Some(ProxyConfig::Socks4 { address, port, user_id }) => {
-                            ProxyConnection::Socks4 {
-                                address: address.clone(),
-                                port: *port,
-                                user_id: user_id.clone(),
-                            }
-                        }
-                        Some(ProxyConfig::Http { address, port, username, password: proxy_pwd }) => {
-                            ProxyConnection::HttpConnect {
-                                address: address.clone(),
-                                port: *port,
-                                auth: match (username, proxy_pwd) {
-                                    (Some(u), Some(p)) => Some((u.clone(), p.clone())),
-                                    _ => None,
-                                },
-                            }
-                        }
+                        Some(ProxyConfig::Socks5 {
+                            address,
+                            port,
+                            username,
+                            password: proxy_pwd,
+                        }) => ProxyConnection::Socks5 {
+                            address: address.clone(),
+                            port: *port,
+                            auth: match (username, proxy_pwd) {
+                                (Some(u), Some(p)) => Some((u.clone(), p.clone())),
+                                _ => None,
+                            },
+                        },
+                        Some(ProxyConfig::Socks4 {
+                            address,
+                            port,
+                            user_id,
+                        }) => ProxyConnection::Socks4 {
+                            address: address.clone(),
+                            port: *port,
+                            user_id: user_id.clone(),
+                        },
+                        Some(ProxyConfig::Http {
+                            address,
+                            port,
+                            username,
+                            password: proxy_pwd,
+                        }) => ProxyConnection::HttpConnect {
+                            address: address.clone(),
+                            port: *port,
+                            auth: match (username, proxy_pwd) {
+                                (Some(u), Some(p)) => Some((u.clone(), p.clone())),
+                                _ => None,
+                            },
+                        },
                         Some(ProxyConfig::ProxyCommand { command }) => {
                             ProxyConnection::ProxyCommand {
                                 command: command.clone(),
@@ -1403,29 +1460,27 @@ impl App {
                             }
                         }
                         // JumpHost is already handled via proxy_chain, None means direct
-                        Some(ProxyConfig::JumpHost { .. }) | None => {
-                            ProxyConnection::Direct
-                        }
+                        Some(ProxyConfig::JumpHost { .. }) | None => ProxyConnection::Direct,
                     }
                 } else {
                     // Intermediate jump hosts - connect directly (they're part of the chain)
                     ProxyConnection::Direct
                 };
-                
+
                 let connection = SshConnection::connect_via_proxy(
                     chain_host.clone(),
                     proxy,
                     password,
                     None, // passphrase
                 )?;
-                
+
                 if is_last {
                     return Ok((connection, passwords));
                 } else {
                     prev_connection = Some(connection);
                 }
             }
-            
+
             Err(anyhow::anyhow!("Empty proxy chain"))
         });
 
@@ -1500,7 +1555,7 @@ impl App {
                 self.session_order.push(session_id);
                 self.view = View::Session;
                 self.status_message = Some(format!("Connected to {}", host_name));
-                
+
                 // Store password for SFTP reuse
                 if let Some(pwd) = passwords_used.get(&host_id) {
                     self.session_passwords.insert(host_id, pwd.clone());
@@ -1515,11 +1570,7 @@ impl App {
     }
 
     /// Handle connection failure (called from Tick when connection fails)
-    async fn handle_connection_failure(
-        &mut self,
-        error_msg: &str,
-        hosts_to_save: Vec<Uuid>,
-    ) {
+    async fn handle_connection_failure(&mut self, error_msg: &str, hosts_to_save: Vec<Uuid>) {
         // Connection failed - if we used saved passwords, clear them
         for host_to_save_id in &hosts_to_save {
             if self.credentials.has_saved_password(*host_to_save_id) {
@@ -1537,19 +1588,19 @@ impl App {
     async fn open_sftp_for_host(&mut self, host: HostConfig) -> Result<()> {
         let host_id = host.id;
         let host_name = host.name.clone();
-        
+
         // Check if we already have an SFTP session for this host
         if self.sftp_sessions.get_by_host(host_id).is_some() {
             self.active_sftp_host = Some(host_id);
             self.push_view(View::Sftp);
-            
+
             // Initialize file browser if needed
             if self.file_browser.is_none() {
                 let mut browser = FileBrowser::new();
                 browser.left.load_local().await?;
                 self.file_browser = Some(browser);
             }
-            
+
             // Reload remote pane
             if let Some(browser) = &mut self.file_browser {
                 if let Some(sftp_session) = self.sftp_sessions.get_by_host(host_id) {
@@ -1557,26 +1608,25 @@ impl App {
                     let _ = browser.right.load_remote(sftp_session);
                 }
             }
-            
+
             return Ok(());
         }
-        
+
         // Get password: first check session passwords (from current session), then credential manager
-        let password = self.session_passwords.get(&host_id).cloned()
-            .or_else(|| {
-                if self.credentials.is_unlocked() {
-                    self.credentials.get_password(host_id).ok().flatten()
-                } else {
-                    None
-                }
-            });
-        
+        let password = self.session_passwords.get(&host_id).cloned().or_else(|| {
+            if self.credentials.is_unlocked() {
+                self.credentials.get_password(host_id).ok().flatten()
+            } else {
+                None
+            }
+        });
+
         // Check if we have a password or if the host uses key/agent authentication
         let has_key_auth = matches!(
             host.auth,
-            crate::config::AuthMethod::KeyFile { .. } | 
-            crate::config::AuthMethod::Agent | 
-            crate::config::AuthMethod::Certificate { .. }
+            crate::config::AuthMethod::KeyFile { .. }
+                | crate::config::AuthMethod::Agent
+                | crate::config::AuthMethod::Certificate { .. }
         );
         if password.is_none() && !has_key_auth {
             self.status_message = Some(format!(
@@ -1585,7 +1635,7 @@ impl App {
             ));
             return Ok(());
         }
-        
+
         // Create a new connection for SFTP (separate from shell connection)
         // Must use proxy chain just like connect_to_host does
         let pwd_source = if self.session_passwords.contains_key(&host_id) {
@@ -1596,13 +1646,14 @@ impl App {
             "none"
         };
         let has_pwd = password.is_some();
-        
+
         // Resolve the full proxy chain (same as connect_to_host)
         let proxy_chain = self.config.resolve_proxy_chain(&host);
-        
+
         // Collect passwords for all hosts in the chain
-        let mut passwords: std::collections::HashMap<uuid::Uuid, String> = std::collections::HashMap::new();
-        
+        let mut passwords: std::collections::HashMap<uuid::Uuid, String> =
+            std::collections::HashMap::new();
+
         // Get passwords for all hosts in the chain
         for chain_host in &proxy_chain {
             // First check session passwords
@@ -1615,23 +1666,23 @@ impl App {
                 }
             }
         }
-        
+
         // For the target host, also try the password variable we already retrieved
         if let Some(pwd) = password.clone() {
             passwords.entry(host_id).or_insert(pwd);
         }
-        
+
         let username = host.username.clone();
         let sftp_result = tokio::task::spawn_blocking(move || {
             use crate::config::ProxyConfig;
-            
+
             // Connect through the proxy chain (same logic as connect_to_host)
             let mut prev_connection: Option<SshConnection> = None;
-            
+
             for (i, chain_host) in proxy_chain.iter().enumerate() {
                 let is_last = i == proxy_chain.len() - 1;
                 let password = passwords.get(&chain_host.id).map(|s| s.as_str());
-                
+
                 // Determine the proxy connection type (same logic as connect_to_host)
                 let proxy = if let Some(conn) = prev_connection.take() {
                     ProxyConnection::JumpHost {
@@ -1640,33 +1691,41 @@ impl App {
                 } else if is_last {
                     // For the final host, check if it has a non-JumpHost proxy config
                     match &chain_host.proxy {
-                        Some(ProxyConfig::Socks5 { address, port, username, password: proxy_pwd }) => {
-                            ProxyConnection::Socks5 {
-                                address: address.clone(),
-                                port: *port,
-                                auth: match (username, proxy_pwd) {
-                                    (Some(u), Some(p)) => Some((u.clone(), p.clone())),
-                                    _ => None,
-                                },
-                            }
-                        }
-                        Some(ProxyConfig::Socks4 { address, port, user_id }) => {
-                            ProxyConnection::Socks4 {
-                                address: address.clone(),
-                                port: *port,
-                                user_id: user_id.clone(),
-                            }
-                        }
-                        Some(ProxyConfig::Http { address, port, username, password: proxy_pwd }) => {
-                            ProxyConnection::HttpConnect {
-                                address: address.clone(),
-                                port: *port,
-                                auth: match (username, proxy_pwd) {
-                                    (Some(u), Some(p)) => Some((u.clone(), p.clone())),
-                                    _ => None,
-                                },
-                            }
-                        }
+                        Some(ProxyConfig::Socks5 {
+                            address,
+                            port,
+                            username,
+                            password: proxy_pwd,
+                        }) => ProxyConnection::Socks5 {
+                            address: address.clone(),
+                            port: *port,
+                            auth: match (username, proxy_pwd) {
+                                (Some(u), Some(p)) => Some((u.clone(), p.clone())),
+                                _ => None,
+                            },
+                        },
+                        Some(ProxyConfig::Socks4 {
+                            address,
+                            port,
+                            user_id,
+                        }) => ProxyConnection::Socks4 {
+                            address: address.clone(),
+                            port: *port,
+                            user_id: user_id.clone(),
+                        },
+                        Some(ProxyConfig::Http {
+                            address,
+                            port,
+                            username,
+                            password: proxy_pwd,
+                        }) => ProxyConnection::HttpConnect {
+                            address: address.clone(),
+                            port: *port,
+                            auth: match (username, proxy_pwd) {
+                                (Some(u), Some(p)) => Some((u.clone(), p.clone())),
+                                _ => None,
+                            },
+                        },
                         Some(ProxyConfig::ProxyCommand { command }) => {
                             ProxyConnection::ProxyCommand {
                                 command: command.clone(),
@@ -1674,73 +1733,75 @@ impl App {
                                 target_port: chain_host.port,
                             }
                         }
-                        Some(ProxyConfig::JumpHost { .. }) | None => {
-                            ProxyConnection::Direct
-                        }
+                        Some(ProxyConfig::JumpHost { .. }) | None => ProxyConnection::Direct,
                     }
                 } else {
                     ProxyConnection::Direct
                 };
-                
+
                 let connection = SshConnection::connect_via_proxy(
                     chain_host.clone(),
                     proxy,
                     password,
                     None, // passphrase
                 )?;
-                
+
                 if is_last {
                     // Open SFTP on the final connection (target host)
                     let sftp = connection.open_sftp()?;
                     let conn_id = connection.id;
-                    
+
                     // Create SFTP session with blocking calls INSIDE spawn_blocking
                     let sftp_session = SftpSession::new(sftp, host_id, conn_id, &username)?;
                     let session_cwd = sftp_session.cwd.clone();
-                    
+
                     // Load initial directory listing (blocking) INSIDE spawn_blocking
                     let entries = sftp_session.read_dir(&session_cwd).unwrap_or_default();
-                    
+
                     return Ok::<_, anyhow::Error>((connection, sftp_session, entries));
                 } else {
                     prev_connection = Some(connection);
                 }
             }
-            
+
             Err(anyhow::anyhow!("Empty proxy chain"))
-        }).await?;
-        
+        })
+        .await?;
+
         match sftp_result {
             Ok((connection, sftp_session, initial_entries)) => {
                 // Store connection
                 self.connections.add(connection);
-                
+
                 // Store SFTP session (already created in blocking context)
                 let session_cwd = sftp_session.cwd.clone();
                 self.sftp_sessions.add(sftp_session);
                 self.active_sftp_host = Some(host_id);
-                
+
                 // Initialize file browser with pre-loaded entries
                 let mut browser = if let Some(b) = self.file_browser.take() {
                     b
                 } else {
                     FileBrowser::new()
                 };
-                
+
                 browser.left.load_local().await?;
                 browser.right.path = session_cwd;
                 browser.right.entries = initial_entries;
                 browser.right.sort_entries();
-                
+
                 self.file_browser = Some(browser);
                 self.push_view(View::Sftp);
                 self.status_message = Some(format!("SFTP connected to {}", host_name));
             }
             Err(e) => {
-                self.status_message = Some(format!("SFTP failed (pwd from {}, has_pwd={}): {}", pwd_source, has_pwd, e));
+                self.status_message = Some(format!(
+                    "SFTP failed (pwd from {}, has_pwd={}): {}",
+                    pwd_source, has_pwd, e
+                ));
             }
         }
-        
+
         Ok(())
     }
 
@@ -1820,7 +1881,7 @@ impl App {
     async fn handle_session_key(&mut self, key: crossterm::event::KeyEvent) -> Result<()> {
         // Escape prefix timeout (1 second)
         const ESCAPE_PREFIX_TIMEOUT: Duration = Duration::from_secs(1);
-        
+
         // Check for escape prefix timeout
         if self.escape_prefix_active {
             if let Some(prefix_time) = self.escape_prefix_time {
@@ -1830,17 +1891,17 @@ impl App {
                 }
             }
         }
-        
+
         // Handle session list overlay if visible
         if self.session_list_visible {
             return self.handle_session_list_key(key).await;
         }
-        
+
         // Handle connection overlay if visible
         if self.show_connection_overlay {
             return self.handle_connection_overlay_key(key).await;
         }
-        
+
         // Check for Ctrl+B (escape prefix)
         if key.code == KeyCode::Char('b') && key.modifiers.contains(KeyModifiers::CONTROL) {
             if self.escape_prefix_active {
@@ -1860,13 +1921,13 @@ impl App {
             }
             return Ok(());
         }
-        
+
         // Handle escape prefix commands
         if self.escape_prefix_active {
             self.escape_prefix_active = false;
             self.escape_prefix_time = None;
             self.status_message = None;
-            
+
             match key.code {
                 // n - Next session
                 KeyCode::Char('n') => {
@@ -1906,7 +1967,7 @@ impl App {
                 }
             }
         }
-        
+
         // Check for Shift+Esc to return to connections (legacy behavior)
         if key.code == KeyCode::Esc && key.modifiers.contains(KeyModifiers::SHIFT) {
             self.view = View::Connections;
@@ -1942,7 +2003,7 @@ impl App {
 
         Ok(())
     }
-    
+
     /// Handle keys when session list overlay is visible
     async fn handle_session_list_key(&mut self, key: crossterm::event::KeyEvent) -> Result<()> {
         match key.code {
@@ -1972,9 +2033,12 @@ impl App {
         }
         Ok(())
     }
-    
+
     /// Handle keys when connection overlay is visible
-    async fn handle_connection_overlay_key(&mut self, key: crossterm::event::KeyEvent) -> Result<()> {
+    async fn handle_connection_overlay_key(
+        &mut self,
+        key: crossterm::event::KeyEvent,
+    ) -> Result<()> {
         match key.code {
             KeyCode::Esc => {
                 self.show_connection_overlay = false;
@@ -2001,16 +2065,19 @@ impl App {
         }
         Ok(())
     }
-    
+
     /// Get index of active session in session_order
     fn get_active_session_index(&self) -> usize {
         if let Some(active_id) = self.active_session {
-            self.session_order.iter().position(|&id| id == active_id).unwrap_or(0)
+            self.session_order
+                .iter()
+                .position(|&id| id == active_id)
+                .unwrap_or(0)
         } else {
             0
         }
     }
-    
+
     /// Switch to next session
     fn switch_to_next_session(&mut self) {
         if self.session_order.is_empty() {
@@ -2020,7 +2087,7 @@ impl App {
         let next_index = (current_index + 1) % self.session_order.len();
         self.switch_to_session_index(next_index);
     }
-    
+
     /// Switch to previous session
     fn switch_to_prev_session(&mut self) {
         if self.session_order.is_empty() {
@@ -2034,7 +2101,7 @@ impl App {
         };
         self.switch_to_session_index(prev_index);
     }
-    
+
     /// Switch to session by index
     fn switch_to_session_index(&mut self, index: usize) {
         if index < self.session_order.len() {
@@ -2042,17 +2109,17 @@ impl App {
             self.status_message = Some(format!("Session {}", index + 1));
         }
     }
-    
+
     /// Close current session
     async fn close_current_session(&mut self) {
         if let Some(session_id) = self.active_session {
             // Remove from session order
             self.session_order.retain(|&id| id != session_id);
-            
+
             // Remove channel and session
             self.channels.remove(&session_id);
             self.sessions.remove(session_id);
-            
+
             // Switch to another session or go back to connections
             if let Some(&next_session) = self.session_order.first() {
                 self.active_session = Some(next_session);
@@ -2077,14 +2144,14 @@ impl App {
                 }
             }
             KeyCode::Char('?') => self.view = View::Help,
-            
+
             // Pane switching
             KeyCode::Tab => {
                 if let Some(browser) = &mut self.file_browser {
                     browser.switch_pane();
                 }
             }
-            
+
             // Cursor movement
             KeyCode::Up | KeyCode::Char('k') => {
                 if let Some(browser) = &mut self.file_browser {
@@ -2116,7 +2183,7 @@ impl App {
                     browser.active_pane_mut().page_down(10);
                 }
             }
-            
+
             // Selection
             KeyCode::Char(' ') => {
                 if let Some(browser) = &mut self.file_browser {
@@ -2124,61 +2191,61 @@ impl App {
                     browser.active_pane_mut().cursor_down();
                 }
             }
-            
+
             // Enter directory or trigger transfer
             KeyCode::Enter => {
                 self.handle_sftp_enter().await?;
             }
-            
+
             // Backspace goes up a directory
             KeyCode::Backspace => {
                 self.handle_sftp_go_parent().await?;
             }
-            
+
             // Copy to other pane (F5 or 'c')
             KeyCode::F(5) | KeyCode::Char('c') => {
                 self.handle_sftp_copy().await?;
             }
-            
+
             // Move to other pane (F6 or 'm')
             KeyCode::F(6) | KeyCode::Char('m') => {
                 self.handle_sftp_move().await?;
             }
-            
+
             // Delete (F8 or 'd') - local only
             KeyCode::F(8) | KeyCode::Char('d') => {
                 self.handle_sftp_delete().await?;
             }
-            
+
             // New directory (n)
             KeyCode::Char('n') => {
                 self.status_message = Some("New directory: not yet implemented".to_string());
             }
-            
+
             // Rename (r)
             KeyCode::Char('r') => {
                 self.status_message = Some("Rename: not yet implemented".to_string());
             }
-            
+
             // Toggle hidden files (h)
             KeyCode::Char('h') => {
                 if let Some(browser) = &mut self.file_browser {
                     browser.active_pane_mut().toggle_hidden();
                 }
             }
-            
+
             // Sort cycling (s)
             KeyCode::Char('s') => {
                 if let Some(browser) = &mut self.file_browser {
                     browser.active_pane_mut().cycle_sort();
                 }
             }
-            
+
             // Refresh (F2)
             KeyCode::F(2) => {
                 self.handle_sftp_refresh().await?;
             }
-            
+
             _ => {}
         }
         Ok(())
@@ -2187,7 +2254,10 @@ impl App {
     /// Handle Enter key in SFTP view - navigate into directory or start transfer
     async fn handle_sftp_enter(&mut self) -> Result<()> {
         let entry_info = if let Some(browser) = &self.file_browser {
-            browser.active_pane().current_entry().map(|e| (e.is_dir, e.path.clone()))
+            browser
+                .active_pane()
+                .current_entry()
+                .map(|e| (e.is_dir, e.path.clone()))
         } else {
             None
         };
@@ -2199,14 +2269,16 @@ impl App {
                     let is_remote = browser.active_pane().is_remote;
                     browser.active_pane_mut().path = path;
                     browser.active_pane_mut().cursor = 0;
-                    
+
                     if is_remote {
                         // Reload remote pane
                         if let Some(host_id) = self.active_sftp_host {
                             if let Some(sftp_session) = self.sftp_sessions.get_by_host(host_id) {
                                 let path = browser.active_pane().path.clone();
-                                if let Err(e) = browser.active_pane_mut().load_remote(sftp_session) {
-                                    self.status_message = Some(format!("Failed to load {}: {}", path.display(), e));
+                                if let Err(e) = browser.active_pane_mut().load_remote(sftp_session)
+                                {
+                                    self.status_message =
+                                        Some(format!("Failed to load {}: {}", path.display(), e));
                                 }
                             }
                         }
@@ -2232,7 +2304,7 @@ impl App {
         } else {
             false
         };
-        
+
         if changed {
             self.handle_sftp_refresh().await?;
         }
@@ -2243,7 +2315,7 @@ impl App {
     async fn handle_sftp_refresh(&mut self) -> Result<()> {
         if let Some(browser) = &mut self.file_browser {
             let is_remote = browser.active_pane().is_remote;
-            
+
             if is_remote {
                 if let Some(host_id) = self.active_sftp_host {
                     if let Some(sftp_session) = self.sftp_sessions.get_by_host(host_id) {
@@ -2267,28 +2339,35 @@ impl App {
         let (source_files, is_upload) = if let Some(browser) = &self.file_browser {
             let active = browser.active_pane();
             let selected = active.selected_entries();
-            
+
             // If no selections, use current entry
             let files: Vec<_> = if selected.is_empty() {
-                active.current_entry()
+                active
+                    .current_entry()
                     .filter(|e| e.name != "..")
                     .into_iter()
                     .collect()
             } else {
                 selected.into_iter().filter(|e| e.name != "..").collect()
             };
-            
+
             let is_upload = !active.is_remote; // Uploading if source is local
-            (files.iter().map(|f| (f.path.clone(), f.size)).collect::<Vec<_>>(), is_upload)
+            (
+                files
+                    .iter()
+                    .map(|f| (f.path.clone(), f.size))
+                    .collect::<Vec<_>>(),
+                is_upload,
+            )
         } else {
             return Ok(());
         };
-        
+
         if source_files.is_empty() {
             self.status_message = Some("No files selected".to_string());
             return Ok(());
         }
-        
+
         // Get SFTP host and destination path
         let host_id = match self.active_sftp_host {
             Some(id) => id,
@@ -2297,17 +2376,19 @@ impl App {
                 return Ok(());
             }
         };
-        
-        let dest_path = self.file_browser.as_ref()
+
+        let dest_path = self
+            .file_browser
+            .as_ref()
             .map(|b| b.inactive_pane().path.clone())
             .unwrap_or_default();
-        
+
         let direction = if is_upload {
             crate::sftp::TransferDirection::Upload
         } else {
             crate::sftp::TransferDirection::Download
         };
-        
+
         // Get SFTP session for transfer
         let sftp_session = match self.sftp_sessions.get_by_host(host_id) {
             Some(s) => s,
@@ -2316,13 +2397,16 @@ impl App {
                 return Ok(());
             }
         };
-        
+
         let file_count = source_files.len();
-        
+
         for (source, size) in source_files {
-            let filename = source.file_name().map(|n| n.to_os_string()).unwrap_or_default();
+            let filename = source
+                .file_name()
+                .map(|n| n.to_os_string())
+                .unwrap_or_default();
             let dest = dest_path.join(&filename);
-            
+
             // Execute transfer immediately (synchronous for now, proper async later)
             let result = if is_upload {
                 // Upload: read local file, write to remote
@@ -2331,17 +2415,18 @@ impl App {
                 // Download: read from remote, write to local
                 self.execute_download(&source, &dest, sftp_session)
             };
-            
+
             match result {
                 Ok(_) => {
-                    self.status_message = Some(format!("Transferred: {}", filename.to_string_lossy()));
+                    self.status_message =
+                        Some(format!("Transferred: {}", filename.to_string_lossy()));
                 }
                 Err(e) => {
                     self.status_message = Some(format!("Transfer failed: {}", e));
                 }
             }
         }
-        
+
         // Refresh destination pane
         if let Some(browser) = &mut self.file_browser {
             if is_upload {
@@ -2354,40 +2439,50 @@ impl App {
                 let _ = browser.left.load_local().await;
             }
         }
-        
+
         self.status_message = Some(format!("Transferred {} file(s)", file_count));
         Ok(())
     }
 
     /// Execute upload from local to remote
-    fn execute_upload(&self, source: &std::path::Path, dest: &std::path::Path, sftp_session: &SftpSession) -> Result<()> {
+    fn execute_upload(
+        &self,
+        source: &std::path::Path,
+        dest: &std::path::Path,
+        sftp_session: &SftpSession,
+    ) -> Result<()> {
         use std::io::{Read, Write};
-        
+
         // Read local file
         let mut local_file = std::fs::File::open(source)?;
         let mut buffer = Vec::new();
         local_file.read_to_end(&mut buffer)?;
-        
+
         // Write to remote
         let mut remote_file = sftp_session.create(dest)?;
         remote_file.write_all(&buffer)?;
-        
+
         Ok(())
     }
 
     /// Execute download from remote to local
-    fn execute_download(&self, source: &std::path::Path, dest: &std::path::Path, sftp_session: &SftpSession) -> Result<()> {
+    fn execute_download(
+        &self,
+        source: &std::path::Path,
+        dest: &std::path::Path,
+        sftp_session: &SftpSession,
+    ) -> Result<()> {
         use std::io::{Read, Write};
-        
+
         // Read remote file
         let mut remote_file = sftp_session.open_read(source)?;
         let mut buffer = Vec::new();
         remote_file.read_to_end(&mut buffer)?;
-        
+
         // Write to local
         let mut local_file = std::fs::File::create(dest)?;
         local_file.write_all(&buffer)?;
-        
+
         Ok(())
     }
 
@@ -2406,20 +2501,22 @@ impl App {
                 return Ok(());
             }
         }
-        
+
         // Get selected files from active pane (local only)
         let files_to_delete: Vec<_> = if let Some(browser) = &self.file_browser {
             let active = browser.active_pane();
             let selected = active.selected_entries();
-            
+
             if selected.is_empty() {
-                active.current_entry()
+                active
+                    .current_entry()
                     .filter(|e| e.name != "..")
                     .into_iter()
                     .map(|e| e.path.clone())
                     .collect()
             } else {
-                selected.into_iter()
+                selected
+                    .into_iter()
                     .filter(|e| e.name != "..")
                     .map(|e| e.path.clone())
                     .collect()
@@ -2427,14 +2524,17 @@ impl App {
         } else {
             return Ok(());
         };
-        
+
         if files_to_delete.is_empty() {
             self.status_message = Some("No files selected for deletion".to_string());
             return Ok(());
         }
-        
+
         // TODO: Add confirmation prompt
-        self.status_message = Some(format!("Delete {} file(s): confirmation not yet implemented", files_to_delete.len()));
+        self.status_message = Some(format!(
+            "Delete {} file(s): confirmation not yet implemented",
+            files_to_delete.len()
+        ));
         Ok(())
     }
 
@@ -2457,8 +2557,8 @@ impl App {
     }
 
     async fn handle_settings_key(&mut self, key: crossterm::event::KeyEvent) -> Result<()> {
-        use crate::tui::{gruvbox_dark, dracula, nord};
-        
+        use crate::tui::{dracula, gruvbox_dark, nord};
+
         // Number of categories and items per category
         const CATEGORIES: &[&str] = &["Appearance", "SSH", "Logging"];
         // Items per category: [Appearance: theme, mouse, status_bar, scrollback, graph_style], [SSH: timeout, keepalive, reconnect], [Logging: enabled, format]
@@ -2466,7 +2566,7 @@ impl App {
         const THEMES: &[&str] = &["tokyo-night", "gruvbox-dark", "dracula", "nord"];
         const GRAPH_STYLES: &[&str] = &["braille", "block", "ascii"];
         const LOG_FORMATS: &[&str] = &["timestamped", "raw"];
-        
+
         // If dropdown is open, handle dropdown navigation
         if self.settings_dropdown_open {
             match key.code {
@@ -2490,7 +2590,7 @@ impl App {
             }
             return Ok(());
         }
-        
+
         match key.code {
             KeyCode::Esc => {
                 self.view = View::Connections;
@@ -2498,7 +2598,7 @@ impl App {
                 self.settings_item = 0;
             }
             KeyCode::Char('?') => self.view = View::Help,
-            
+
             // Category navigation (Tab or Left/Right)
             KeyCode::Tab | KeyCode::Right | KeyCode::Char('l') => {
                 self.settings_category = (self.settings_category + 1) % CATEGORIES.len();
@@ -2512,7 +2612,7 @@ impl App {
                 }
                 self.settings_item = 0;
             }
-            
+
             // Item navigation (Up/Down)
             KeyCode::Up | KeyCode::Char('k') => {
                 let max_items = ITEMS_PER_CATEGORY[self.settings_category];
@@ -2526,79 +2626,99 @@ impl App {
                 let max_items = ITEMS_PER_CATEGORY[self.settings_category];
                 self.settings_item = (self.settings_item + 1) % max_items;
             }
-            
+
             // Toggle or open dropdown
             KeyCode::Enter | KeyCode::Char(' ') => {
                 match self.settings_category {
-                    0 => { // Appearance
+                    0 => {
+                        // Appearance
                         match self.settings_item {
-                            0 => { // Theme - open dropdown
+                            0 => {
+                                // Theme - open dropdown
                                 self.settings_dropdown_open = true;
                             }
-                            1 => { // Mouse enabled - toggle
-                                self.config.settings.ui.mouse_enabled = !self.config.settings.ui.mouse_enabled;
+                            1 => {
+                                // Mouse enabled - toggle
+                                self.config.settings.ui.mouse_enabled =
+                                    !self.config.settings.ui.mouse_enabled;
                                 self.config.save().await?;
                             }
-                            2 => { // Status bar - toggle
-                                self.config.settings.ui.show_status_bar = !self.config.settings.ui.show_status_bar;
+                            2 => {
+                                // Status bar - toggle
+                                self.config.settings.ui.show_status_bar =
+                                    !self.config.settings.ui.show_status_bar;
                                 self.config.save().await?;
                             }
-                            3 => { // Scrollback - toggle between presets
-                                self.config.settings.ui.scrollback_lines = match self.config.settings.ui.scrollback_lines {
-                                    1000 => 5000,
-                                    5000 => 10000,
-                                    10000 => 50000,
-                                    50000 => 100000,
-                                    _ => 1000,
-                                };
+                            3 => {
+                                // Scrollback - toggle between presets
+                                self.config.settings.ui.scrollback_lines =
+                                    match self.config.settings.ui.scrollback_lines {
+                                        1000 => 5000,
+                                        5000 => 10000,
+                                        10000 => 50000,
+                                        50000 => 100000,
+                                        _ => 1000,
+                                    };
                                 self.config.save().await?;
                             }
-                            4 => { // Graph style - open dropdown
+                            4 => {
+                                // Graph style - open dropdown
                                 self.settings_dropdown_open = true;
                             }
                             _ => {}
                         }
                     }
-                    1 => { // SSH
+                    1 => {
+                        // SSH
                         match self.settings_item {
-                            0 => { // Connection timeout - cycle through presets
-                                self.config.settings.ssh.connection_timeout = match self.config.settings.ssh.connection_timeout {
-                                    10 => 30,
-                                    30 => 60,
-                                    60 => 120,
-                                    _ => 10,
-                                };
+                            0 => {
+                                // Connection timeout - cycle through presets
+                                self.config.settings.ssh.connection_timeout =
+                                    match self.config.settings.ssh.connection_timeout {
+                                        10 => 30,
+                                        30 => 60,
+                                        60 => 120,
+                                        _ => 10,
+                                    };
                                 self.config.save().await?;
                             }
-                            1 => { // Keepalive - cycle
-                                self.config.settings.ssh.keepalive_interval = match self.config.settings.ssh.keepalive_interval {
-                                    0 => 15,
-                                    15 => 30,
-                                    30 => 60,
-                                    _ => 0,
-                                };
+                            1 => {
+                                // Keepalive - cycle
+                                self.config.settings.ssh.keepalive_interval =
+                                    match self.config.settings.ssh.keepalive_interval {
+                                        0 => 15,
+                                        15 => 30,
+                                        30 => 60,
+                                        _ => 0,
+                                    };
                                 self.config.save().await?;
                             }
-                            2 => { // Reconnect attempts - cycle
-                                self.config.settings.ssh.reconnect_attempts = match self.config.settings.ssh.reconnect_attempts {
-                                    0 => 1,
-                                    1 => 3,
-                                    3 => 5,
-                                    5 => 10,
-                                    _ => 0,
-                                };
+                            2 => {
+                                // Reconnect attempts - cycle
+                                self.config.settings.ssh.reconnect_attempts =
+                                    match self.config.settings.ssh.reconnect_attempts {
+                                        0 => 1,
+                                        1 => 3,
+                                        3 => 5,
+                                        5 => 10,
+                                        _ => 0,
+                                    };
                                 self.config.save().await?;
                             }
                             _ => {}
                         }
                     }
-                    2 => { // Logging
+                    2 => {
+                        // Logging
                         match self.settings_item {
-                            0 => { // Logging enabled - toggle
-                                self.config.settings.logging.enabled = !self.config.settings.logging.enabled;
+                            0 => {
+                                // Logging enabled - toggle
+                                self.config.settings.logging.enabled =
+                                    !self.config.settings.logging.enabled;
                                 self.config.save().await?;
                             }
-                            1 => { // Log format - open dropdown
+                            1 => {
+                                // Log format - open dropdown
                                 self.settings_dropdown_open = true;
                             }
                             _ => {}
@@ -2611,32 +2731,44 @@ impl App {
         }
         Ok(())
     }
-    
+
     /// Apply next option in dropdown
     async fn apply_dropdown_next(&mut self) -> Result<()> {
-        use crate::tui::{gruvbox_dark, dracula, nord};
+        use crate::tui::{dracula, gruvbox_dark, nord};
         const THEMES: &[&str] = &["tokyo-night", "gruvbox-dark", "dracula", "nord"];
         const GRAPH_STYLES: &[&str] = &["braille", "block", "ascii"];
         const LOG_FORMATS: &[&str] = &["timestamped", "raw"];
-        
+
         match self.settings_category {
             0 => match self.settings_item {
-                0 => { // Theme
-                    let current = THEMES.iter().position(|&t| t == self.config.settings.ui.theme).unwrap_or(0);
+                0 => {
+                    // Theme
+                    let current = THEMES
+                        .iter()
+                        .position(|&t| t == self.config.settings.ui.theme)
+                        .unwrap_or(0);
                     let next = (current + 1) % THEMES.len();
                     self.config.settings.ui.theme = THEMES[next].to_string();
                     self.apply_theme(&THEMES[next].to_string());
                 }
-                4 => { // Graph style
-                    let current = GRAPH_STYLES.iter().position(|&s| s == self.config.settings.ui.graph_style).unwrap_or(0);
+                4 => {
+                    // Graph style
+                    let current = GRAPH_STYLES
+                        .iter()
+                        .position(|&s| s == self.config.settings.ui.graph_style)
+                        .unwrap_or(0);
                     let next = (current + 1) % GRAPH_STYLES.len();
                     self.config.settings.ui.graph_style = GRAPH_STYLES[next].to_string();
                 }
                 _ => {}
             },
             2 => match self.settings_item {
-                1 => { // Log format
-                    let current = LOG_FORMATS.iter().position(|&f| f == self.config.settings.logging.format).unwrap_or(0);
+                1 => {
+                    // Log format
+                    let current = LOG_FORMATS
+                        .iter()
+                        .position(|&f| f == self.config.settings.logging.format)
+                        .unwrap_or(0);
                     let next = (current + 1) % LOG_FORMATS.len();
                     self.config.settings.logging.format = LOG_FORMATS[next].to_string();
                 }
@@ -2646,33 +2778,57 @@ impl App {
         }
         Ok(())
     }
-    
+
     /// Apply previous option in dropdown
     async fn apply_dropdown_prev(&mut self) -> Result<()> {
-        use crate::tui::{gruvbox_dark, dracula, nord};
+        use crate::tui::{dracula, gruvbox_dark, nord};
         const THEMES: &[&str] = &["tokyo-night", "gruvbox-dark", "dracula", "nord"];
         const GRAPH_STYLES: &[&str] = &["braille", "block", "ascii"];
         const LOG_FORMATS: &[&str] = &["timestamped", "raw"];
-        
+
         match self.settings_category {
             0 => match self.settings_item {
-                0 => { // Theme
-                    let current = THEMES.iter().position(|&t| t == self.config.settings.ui.theme).unwrap_or(0);
-                    let prev = if current == 0 { THEMES.len() - 1 } else { current - 1 };
+                0 => {
+                    // Theme
+                    let current = THEMES
+                        .iter()
+                        .position(|&t| t == self.config.settings.ui.theme)
+                        .unwrap_or(0);
+                    let prev = if current == 0 {
+                        THEMES.len() - 1
+                    } else {
+                        current - 1
+                    };
                     self.config.settings.ui.theme = THEMES[prev].to_string();
                     self.apply_theme(&THEMES[prev].to_string());
                 }
-                4 => { // Graph style
-                    let current = GRAPH_STYLES.iter().position(|&s| s == self.config.settings.ui.graph_style).unwrap_or(0);
-                    let prev = if current == 0 { GRAPH_STYLES.len() - 1 } else { current - 1 };
+                4 => {
+                    // Graph style
+                    let current = GRAPH_STYLES
+                        .iter()
+                        .position(|&s| s == self.config.settings.ui.graph_style)
+                        .unwrap_or(0);
+                    let prev = if current == 0 {
+                        GRAPH_STYLES.len() - 1
+                    } else {
+                        current - 1
+                    };
                     self.config.settings.ui.graph_style = GRAPH_STYLES[prev].to_string();
                 }
                 _ => {}
             },
             2 => match self.settings_item {
-                1 => { // Log format
-                    let current = LOG_FORMATS.iter().position(|&f| f == self.config.settings.logging.format).unwrap_or(0);
-                    let prev = if current == 0 { LOG_FORMATS.len() - 1 } else { current - 1 };
+                1 => {
+                    // Log format
+                    let current = LOG_FORMATS
+                        .iter()
+                        .position(|&f| f == self.config.settings.logging.format)
+                        .unwrap_or(0);
+                    let prev = if current == 0 {
+                        LOG_FORMATS.len() - 1
+                    } else {
+                        current - 1
+                    };
                     self.config.settings.logging.format = LOG_FORMATS[prev].to_string();
                 }
                 _ => {}
@@ -2681,10 +2837,10 @@ impl App {
         }
         Ok(())
     }
-    
+
     /// Apply a theme by name
     fn apply_theme(&mut self, theme_name: &str) {
-        use crate::tui::{gruvbox_dark, dracula, nord};
+        use crate::tui::{dracula, gruvbox_dark, nord};
         self.theme = match theme_name {
             "gruvbox-dark" => gruvbox_dark(),
             "dracula" => dracula(),
@@ -2761,41 +2917,44 @@ impl App {
                             // Use cfg to handle Linux-specific clipboard behavior
                             #[cfg(target_os = "linux")]
                             {
-                                use arboard::{SetExtLinux, LinuxClipboardKind};
-                                
+                                use arboard::{LinuxClipboardKind, SetExtLinux};
+
                                 // Set to both Clipboard (Ctrl+V) and Primary (middle-click) selections
                                 // This matches the behavior users expect on Linux
-                                let clipboard_result = clipboard.set()
+                                let clipboard_result = clipboard
+                                    .set()
                                     .clipboard(LinuxClipboardKind::Clipboard)
                                     .text(text.clone());
-                                
+
                                 if let Err(e) = clipboard_result {
                                     self.status_message = Some(format!("Copy failed: {}", e));
                                     return;
                                 }
-                                
+
                                 // Also set primary selection for middle-click paste
                                 // Create another clipboard instance for primary (they can't share)
                                 if let Ok(mut primary_clipboard) = arboard::Clipboard::new() {
-                                    let _ = primary_clipboard.set()
+                                    let _ = primary_clipboard
+                                        .set()
                                         .clipboard(LinuxClipboardKind::Primary)
                                         .text(text.clone());
                                     // Don't need to keep primary clipboard alive - primary selection
                                     // is typically more transient anyway
                                 }
-                                
+
                                 self.status_message = Some(format!("Copied {} chars", text.len()));
                                 session.clear_selection();
                                 // CRITICAL: Persist this clipboard instance to keep the background thread alive
                                 // and maintain ownership of the selection on Linux/X11
                                 self.clipboard = Some(clipboard);
                             }
-                            
+
                             #[cfg(not(target_os = "linux"))]
                             {
                                 match clipboard.set_text(&text) {
                                     Ok(_) => {
-                                        self.status_message = Some(format!("Copied {} chars", text.len()));
+                                        self.status_message =
+                                            Some(format!("Copied {} chars", text.len()));
                                         session.clear_selection();
                                         self.clipboard = Some(clipboard);
                                     }
@@ -2933,7 +3092,7 @@ impl App {
                 // where start_col=0 and width=cols gives us full row content
                 for (row_idx, line) in screen.rows(0, cols).enumerate() {
                     let line_lower = line.to_lowercase();
-                    
+
                     // Search for query in line (case-insensitive)
                     let mut search_start = 0;
                     while let Some(pos) = line_lower[search_start..].find(&query_lower) {
@@ -2963,4 +3122,3 @@ impl App {
         }
     }
 }
-

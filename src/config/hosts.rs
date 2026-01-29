@@ -167,7 +167,11 @@ impl Default for HostConfig {
 
 impl HostConfig {
     /// Create a new host with basic info
-    pub fn new(name: impl Into<String>, hostname: impl Into<String>, username: impl Into<String>) -> Self {
+    pub fn new(
+        name: impl Into<String>,
+        hostname: impl Into<String>,
+        username: impl Into<String>,
+    ) -> Self {
         Self {
             name: name.into(),
             hostname: hostname.into(),

@@ -91,7 +91,8 @@ impl KeyManager {
             let encrypted = content.contains("ENCRYPTED");
             ("openssh".to_string(), encrypted)
         } else if first_line.contains("RSA PRIVATE KEY") {
-            let encrypted = content.contains("ENCRYPTED") || content.contains("Proc-Type: 4,ENCRYPTED");
+            let encrypted =
+                content.contains("ENCRYPTED") || content.contains("Proc-Type: 4,ENCRYPTED");
             ("rsa".to_string(), encrypted)
         } else if first_line.contains("EC PRIVATE KEY") {
             let encrypted = content.contains("ENCRYPTED");
@@ -117,7 +118,11 @@ impl KeyManager {
             fingerprint,
             comment,
             encrypted,
-            public_key_path: if pub_path.exists() { Some(pub_path) } else { None },
+            public_key_path: if pub_path.exists() {
+                Some(pub_path)
+            } else {
+                None
+            },
         })
     }
 
@@ -146,7 +151,7 @@ impl KeyManager {
             .arg(pub_key_path)
             .output()
             .ok()?;
-        
+
         if output.status.success() {
             let stdout = String::from_utf8_lossy(&output.stdout);
             // Format: "256 SHA256:xxxx comment (ED25519)"
@@ -159,12 +164,23 @@ impl KeyManager {
     }
 
     /// Generate a new Ed25519 key pair using ssh-keygen
-    pub fn generate_ed25519(&self, path: &Path, comment: &str, passphrase: Option<&str>) -> Result<()> {
+    pub fn generate_ed25519(
+        &self,
+        path: &Path,
+        comment: &str,
+        passphrase: Option<&str>,
+    ) -> Result<()> {
         self.generate_key(path, "ed25519", comment, passphrase)
     }
 
     /// Generate a new RSA key pair using ssh-keygen
-    pub fn generate_rsa(&self, path: &Path, bits: usize, comment: &str, passphrase: Option<&str>) -> Result<()> {
+    pub fn generate_rsa(
+        &self,
+        path: &Path,
+        bits: usize,
+        comment: &str,
+        passphrase: Option<&str>,
+    ) -> Result<()> {
         let mut cmd = Command::new("ssh-keygen");
         cmd.args(["-t", "rsa"])
             .args(["-b", &bits.to_string()])
@@ -172,20 +188,29 @@ impl KeyManager {
             .arg(path)
             .args(["-C", comment])
             .args(["-N", passphrase.unwrap_or("")]);
-        
-        let output = cmd.output()
+
+        let output = cmd
+            .output()
             .map_err(|e| anyhow!("Failed to run ssh-keygen: {}", e))?;
-        
+
         if !output.status.success() {
-            return Err(anyhow!("ssh-keygen failed: {}", 
-                String::from_utf8_lossy(&output.stderr)));
+            return Err(anyhow!(
+                "ssh-keygen failed: {}",
+                String::from_utf8_lossy(&output.stderr)
+            ));
         }
-        
+
         Ok(())
     }
 
     /// Generate a key with specified type
-    fn generate_key(&self, path: &Path, key_type: &str, comment: &str, passphrase: Option<&str>) -> Result<()> {
+    fn generate_key(
+        &self,
+        path: &Path,
+        key_type: &str,
+        comment: &str,
+        passphrase: Option<&str>,
+    ) -> Result<()> {
         // Create parent directory if needed
         if let Some(parent) = path.parent() {
             fs::create_dir_all(parent)?;
@@ -197,15 +222,18 @@ impl KeyManager {
             .arg(path)
             .args(["-C", comment])
             .args(["-N", passphrase.unwrap_or("")]);
-        
-        let output = cmd.output()
+
+        let output = cmd
+            .output()
             .map_err(|e| anyhow!("Failed to run ssh-keygen: {}", e))?;
-        
+
         if !output.status.success() {
-            return Err(anyhow!("ssh-keygen failed: {}", 
-                String::from_utf8_lossy(&output.stderr)));
+            return Err(anyhow!(
+                "ssh-keygen failed: {}",
+                String::from_utf8_lossy(&output.stderr)
+            ));
         }
-        
+
         Ok(())
     }
 
@@ -221,9 +249,8 @@ impl KeyManager {
         } else {
             path.with_extension("pub")
         };
-        
-        fs::read_to_string(&pub_path)
-            .map_err(|e| anyhow!("Failed to read public key: {}", e))
+
+        fs::read_to_string(&pub_path).map_err(|e| anyhow!("Failed to read public key: {}", e))
     }
 
     /// Delete a key pair
@@ -232,16 +259,16 @@ impl KeyManager {
         if path.exists() {
             fs::remove_file(path)?;
         }
-        
+
         // Delete public key
         let pub_path = path.with_extension("pub");
         if pub_path.exists() {
             fs::remove_file(&pub_path)?;
         }
-        
+
         // Remove from cache
         self.keys.remove(path);
-        
+
         Ok(())
     }
 }

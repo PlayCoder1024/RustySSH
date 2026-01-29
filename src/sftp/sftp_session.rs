@@ -35,7 +35,8 @@ impl SftpSession {
         // 1. realpath(".") - works on most servers
         // 2. /home/{username} - common Linux layout
         // 3. / - fallback
-        let cwd = sftp.realpath(Path::new("."))
+        let cwd = sftp
+            .realpath(Path::new("."))
             .or_else(|_| {
                 let home_path = PathBuf::from(format!("/home/{}", username));
                 // Verify the path exists
@@ -46,7 +47,7 @@ impl SftpSession {
                 }
             })
             .unwrap_or_else(|_| PathBuf::from("/"));
-        
+
         Ok(Self {
             id: Uuid::new_v4(),
             host_id,
@@ -65,72 +66,96 @@ impl SftpSession {
     /// Read a remote directory and return file entries
     pub fn read_dir(&self, path: &Path) -> Result<Vec<FileEntry>> {
         let mut entries = Vec::new();
-        
+
         // Add parent directory entry if not at root
         if path.parent().is_some() && path != Path::new("/") {
-            let parent_path = path.parent().map(|p| p.to_path_buf()).unwrap_or_else(|| PathBuf::from("/"));
+            let parent_path = path
+                .parent()
+                .map(|p| p.to_path_buf())
+                .unwrap_or_else(|| PathBuf::from("/"));
             entries.push(FileEntry::parent(parent_path));
         }
-        
+
         // Read directory contents
         let dir_contents = self.sftp.readdir(path)?;
-        
+
         for (file_path, stat) in dir_contents {
-            let name = file_path.file_name()
+            let name = file_path
+                .file_name()
                 .map(|n| n.to_string_lossy().to_string())
                 .unwrap_or_else(|| file_path.to_string_lossy().to_string());
-            
+
             // Skip . and .. entries (we add our own parent entry)
             if name == "." || name == ".." {
                 continue;
             }
-            
+
             let entry = file_stat_to_entry(name, file_path, &stat);
             entries.push(entry);
         }
-        
+
         Ok(entries)
     }
 
     /// Get file info
     pub fn stat(&self, path: &Path) -> Result<FileStat> {
-        self.sftp.stat(path).map_err(|e| anyhow!("Failed to stat {}: {}", path.display(), e))
+        self.sftp
+            .stat(path)
+            .map_err(|e| anyhow!("Failed to stat {}: {}", path.display(), e))
     }
 
     /// Get real path (resolve symlinks)
     pub fn realpath(&self, path: &Path) -> Result<PathBuf> {
-        self.sftp.realpath(path).map_err(|e| anyhow!("Failed to realpath {}: {}", path.display(), e))
+        self.sftp
+            .realpath(path)
+            .map_err(|e| anyhow!("Failed to realpath {}: {}", path.display(), e))
     }
 
     /// Create a directory
     pub fn mkdir(&self, path: &Path, mode: i32) -> Result<()> {
-        self.sftp.mkdir(path, mode).map_err(|e| anyhow!("Failed to mkdir {}: {}", path.display(), e))
+        self.sftp
+            .mkdir(path, mode)
+            .map_err(|e| anyhow!("Failed to mkdir {}: {}", path.display(), e))
     }
 
     /// Remove a directory (not exposed in remote UI per safety requirements)
     pub fn rmdir(&self, path: &Path) -> Result<()> {
-        self.sftp.rmdir(path).map_err(|e| anyhow!("Failed to rmdir {}: {}", path.display(), e))
+        self.sftp
+            .rmdir(path)
+            .map_err(|e| anyhow!("Failed to rmdir {}: {}", path.display(), e))
     }
 
     /// Remove a file (not exposed in remote UI per safety requirements)  
     pub fn unlink(&self, path: &Path) -> Result<()> {
-        self.sftp.unlink(path).map_err(|e| anyhow!("Failed to unlink {}: {}", path.display(), e))
+        self.sftp
+            .unlink(path)
+            .map_err(|e| anyhow!("Failed to unlink {}: {}", path.display(), e))
     }
 
     /// Rename a file or directory
     pub fn rename(&self, src: &Path, dst: &Path) -> Result<()> {
-        self.sftp.rename(src, dst, None)
-            .map_err(|e| anyhow!("Failed to rename {} to {}: {}", src.display(), dst.display(), e))
+        self.sftp.rename(src, dst, None).map_err(|e| {
+            anyhow!(
+                "Failed to rename {} to {}: {}",
+                src.display(),
+                dst.display(),
+                e
+            )
+        })
     }
 
     /// Open a file for reading (for downloads)
     pub fn open_read(&self, path: &Path) -> Result<ssh2::File> {
-        self.sftp.open(path).map_err(|e| anyhow!("Failed to open {}: {}", path.display(), e))
+        self.sftp
+            .open(path)
+            .map_err(|e| anyhow!("Failed to open {}: {}", path.display(), e))
     }
 
     /// Create a file for writing (for uploads)
     pub fn create(&self, path: &Path) -> Result<ssh2::File> {
-        self.sftp.create(path).map_err(|e| anyhow!("Failed to create {}: {}", path.display(), e))
+        self.sftp
+            .create(path)
+            .map_err(|e| anyhow!("Failed to create {}: {}", path.display(), e))
     }
 }
 
@@ -138,13 +163,13 @@ impl SftpSession {
 fn file_stat_to_entry(name: String, path: PathBuf, stat: &FileStat) -> FileEntry {
     let is_dir = stat.is_dir();
     let size = stat.size.unwrap_or(0);
-    
-    let modified = stat.mtime.map(|t| {
-        DateTime::from_timestamp(t as i64, 0).unwrap_or_default()
-    });
-    
+
+    let modified = stat
+        .mtime
+        .map(|t| DateTime::from_timestamp(t as i64, 0).unwrap_or_default());
+
     let permissions = stat.perm;
-    
+
     FileEntry {
         name,
         path,

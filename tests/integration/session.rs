@@ -10,7 +10,12 @@ use uuid::Uuid;
 #[test]
 fn test_session_creation() {
     let host_id = Uuid::new_v4();
-    let session = Session::new(host_id, "test-session".to_string(), DEFAULT_COLS, DEFAULT_ROWS);
+    let session = Session::new(
+        host_id,
+        "test-session".to_string(),
+        DEFAULT_COLS,
+        DEFAULT_ROWS,
+    );
 
     assert_eq!(session.host_id, host_id);
     assert_eq!(session.name, "test-session");

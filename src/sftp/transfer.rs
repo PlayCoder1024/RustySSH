@@ -51,7 +51,12 @@ pub struct TransferItem {
 
 impl TransferItem {
     /// Create a new transfer item
-    pub fn new(source: PathBuf, destination: PathBuf, direction: TransferDirection, total_bytes: u64) -> Self {
+    pub fn new(
+        source: PathBuf,
+        destination: PathBuf,
+        direction: TransferDirection,
+        total_bytes: u64,
+    ) -> Self {
         Self {
             id: Uuid::new_v4(),
             source,
@@ -159,7 +164,7 @@ impl TransferQueue {
     /// Create a new transfer queue
     pub fn new(max_concurrent: usize) -> Self {
         let (progress_tx, progress_rx) = mpsc::unbounded_channel();
-        
+
         Self {
             pending: VecDeque::new(),
             active: Vec::new(),
@@ -207,7 +212,7 @@ impl TransferQueue {
                 self.add_to_history(item);
             }
         }
-        
+
         // Check active (mark as cancelled, actual cancellation happens in transfer task)
         if let Some(item) = self.active.iter_mut().find(|t| t.id == id) {
             item.status = TransferStatus::Cancelled;
@@ -227,13 +232,13 @@ impl TransferQueue {
         if let Some(pos) = self.active.iter().position(|t| t.id == id) {
             let mut item = self.active.remove(pos);
             item.completed_at = Some(Utc::now());
-            
+
             if let Some(err) = error {
                 item.status = TransferStatus::Failed(err);
             } else {
                 item.status = TransferStatus::Completed;
             }
-            
+
             self.add_to_history(item);
         }
     }
@@ -249,7 +254,7 @@ impl TransferQueue {
     /// Start next pending transfer if capacity available
     pub fn process_pending(&mut self) -> Vec<TransferItem> {
         let mut started = Vec::new();
-        
+
         while self.active.len() < self.max_concurrent {
             if let Some(mut item) = self.pending.pop_front() {
                 item.status = TransferStatus::InProgress;
@@ -260,7 +265,7 @@ impl TransferQueue {
                 break;
             }
         }
-        
+
         started
     }
 

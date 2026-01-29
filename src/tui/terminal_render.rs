@@ -44,7 +44,7 @@ impl StyledCell {
     /// Convert to ratatui Style
     pub fn to_style(&self) -> Style {
         let mut style = Style::default();
-        
+
         if self.inverse {
             // Swap fg/bg for inverse
             if let Some(fg) = self.fg {
@@ -64,7 +64,7 @@ impl StyledCell {
                 style = style.bg(bg);
             }
         }
-        
+
         let mut modifiers = Modifier::empty();
         if self.bold {
             modifiers |= Modifier::BOLD;
@@ -75,11 +75,11 @@ impl StyledCell {
         if self.underline {
             modifiers |= Modifier::UNDERLINED;
         }
-        
+
         if !modifiers.is_empty() {
             style = style.add_modifier(modifiers);
         }
-        
+
         style
     }
 
@@ -148,12 +148,12 @@ fn render_screen_to_lines_impl(
 
             if let Some(cell) = screen.cell(row, col) {
                 let mut styled_cell = StyledCell::from_vt100_cell(cell);
-                
+
                 // Apply selection highlighting by inverting colors
                 if is_selected {
                     styled_cell.inverse = !styled_cell.inverse;
                 }
-                
+
                 // Get content (handle empty cells)
                 let content = if styled_cell.content.is_empty() {
                     " ".to_string()
@@ -226,11 +226,11 @@ fn render_screen_to_lines_impl(
             // Check if style is "default" (no inverse, no colors)
             // If selected (inverse=true), we must preserve it
             let is_default_style = last.style == Style::default();
-            
+
             if is_default_style && last.content.trim().is_empty() {
                 spans.pop();
             } else if is_default_style {
-                 // Trim the last span's trailing whitespace
+                // Trim the last span's trailing whitespace
                 if let Some(last_span) = spans.last_mut() {
                     let trimmed = last_span.content.trim_end().to_string();
                     if trimmed.is_empty() {

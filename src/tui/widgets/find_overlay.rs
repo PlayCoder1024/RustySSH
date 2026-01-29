@@ -1,8 +1,8 @@
 //! Find overlay widget for searching in terminal sessions
 
+use crate::tui::Theme;
 use ratatui::prelude::*;
 use ratatui::widgets::{Block, Borders, Clear, Paragraph};
-use crate::tui::Theme;
 
 /// Find overlay for searching within terminal content
 pub struct FindOverlay<'a> {
@@ -17,7 +17,12 @@ pub struct FindOverlay<'a> {
 }
 
 impl<'a> FindOverlay<'a> {
-    pub fn new(query: &'a str, current_match: usize, total_matches: usize, theme: &'a Theme) -> Self {
+    pub fn new(
+        query: &'a str,
+        current_match: usize,
+        total_matches: usize,
+        theme: &'a Theme,
+    ) -> Self {
         Self {
             query,
             current_match,
@@ -34,22 +39,22 @@ impl<'a> Widget for FindOverlay<'a> {
         let height = 3u16;
         let x = area.width.saturating_sub(width + 2);
         let y = 1;
-        
+
         let overlay_area = Rect::new(x, y, width, height);
-        
+
         // Clear the background
         Clear.render(overlay_area, buf);
-        
+
         // Create the overlay block
         let block = Block::default()
             .title(" 󰍉 Find ")
             .borders(Borders::ALL)
             .border_style(self.theme.border_focus())
             .style(Style::default().bg(self.theme.bg_panel()));
-        
+
         let inner = block.inner(overlay_area);
         block.render(overlay_area, buf);
-        
+
         // Build the content
         let match_info = if self.total_matches > 0 {
             format!(" ({}/{})", self.current_match + 1, self.total_matches)
@@ -58,13 +63,18 @@ impl<'a> Widget for FindOverlay<'a> {
         } else {
             String::new()
         };
-        
+
         let content = Line::from(vec![
             Span::styled(self.query, self.theme.text()),
-            Span::styled("█", Style::default().fg(self.theme.fg_main()).add_modifier(Modifier::SLOW_BLINK)),
+            Span::styled(
+                "█",
+                Style::default()
+                    .fg(self.theme.fg_main())
+                    .add_modifier(Modifier::SLOW_BLINK),
+            ),
             Span::styled(&match_info, self.theme.text_dim()),
         ]);
-        
+
         let paragraph = Paragraph::new(content);
         paragraph.render(inner, buf);
     }
@@ -84,22 +94,22 @@ pub fn render_find_overlay(
     let height = 3u16;
     let x = area.x + area.width.saturating_sub(width + 2);
     let y = area.y + 1;
-    
+
     let overlay_area = Rect::new(x, y, width, height);
-    
+
     // Clear the background
     frame.render_widget(Clear, overlay_area);
-    
+
     // Create the overlay block
     let block = Block::default()
         .title(" 󰍉 Find ")
         .borders(Borders::ALL)
         .border_style(theme.border_focus())
         .style(Style::default().bg(theme.bg_panel()));
-    
+
     let inner = block.inner(overlay_area);
     frame.render_widget(block, overlay_area);
-    
+
     // Build the content
     let match_info = if total_matches > 0 {
         format!(" ({}/{})", current_match + 1, total_matches)
@@ -108,13 +118,18 @@ pub fn render_find_overlay(
     } else {
         String::new()
     };
-    
+
     let content = Line::from(vec![
         Span::styled(query, theme.text()),
-        Span::styled("█", Style::default().fg(theme.fg_main()).add_modifier(Modifier::SLOW_BLINK)),
+        Span::styled(
+            "█",
+            Style::default()
+                .fg(theme.fg_main())
+                .add_modifier(Modifier::SLOW_BLINK),
+        ),
         Span::styled(&match_info, theme.text_dim()),
     ]);
-    
+
     let paragraph = Paragraph::new(content);
     frame.render_widget(paragraph, inner);
 }

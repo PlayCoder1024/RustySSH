@@ -7,7 +7,7 @@
 use anyhow::{anyhow, Result};
 use argon2::{
     password_hash::{PasswordHash, PasswordHasher, PasswordVerifier, SaltString},
-    Argon2, Algorithm, Params, Version,
+    Algorithm, Argon2, Params, Version,
 };
 use rand::rngs::OsRng;
 use serde::{Deserialize, Serialize};
@@ -47,14 +47,14 @@ impl MasterPasswordFile {
         }
         let content = serde_json::to_string_pretty(self)?;
         std::fs::write(&path, content)?;
-        
+
         // Set restrictive permissions on Unix
         #[cfg(unix)]
         {
             use std::os::unix::fs::PermissionsExt;
             std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600))?;
         }
-        
+
         Ok(())
     }
 }
@@ -77,10 +77,10 @@ impl MasterPassword {
             kdf_salt: None,
             use_file_storage: false,
         };
-        
+
         // Try to load existing hash from keyring, fall back to file
         instance.load_from_storage();
-        
+
         instance
     }
 
@@ -95,7 +95,7 @@ impl MasterPassword {
         if self.try_load_from_keyring() {
             return;
         }
-        
+
         // Fall back to file storage
         self.use_file_storage = true;
         self.load_from_file();
@@ -106,15 +106,17 @@ impl MasterPassword {
             Ok(e) => e,
             Err(_) => return false,
         };
-        
+
         if let Ok(hash) = hash_entry.get_password() {
             self.cached_hash = Some(hash);
-            
+
             // Also load KDF salt
             if let Ok(salt_entry) = keyring::Entry::new(KEYRING_SERVICE, "kdf_salt") {
                 if let Ok(salt_b64) = salt_entry.get_password() {
                     use base64::Engine;
-                    if let Ok(salt_bytes) = base64::engine::general_purpose::STANDARD.decode(&salt_b64) {
+                    if let Ok(salt_bytes) =
+                        base64::engine::general_purpose::STANDARD.decode(&salt_b64)
+                    {
                         if salt_bytes.len() == 32 {
                             let mut salt = [0u8; 32];
                             salt.copy_from_slice(&salt_bytes);
@@ -123,20 +125,20 @@ impl MasterPassword {
                     }
                 }
             }
-            
+
             return true;
         }
-        
+
         false
     }
 
     fn load_from_file(&mut self) {
         let file = MasterPasswordFile::load();
-        
+
         if let Some(hash) = file.hash {
             self.cached_hash = Some(hash);
         }
-        
+
         if let Some(salt_b64) = file.kdf_salt {
             use base64::Engine;
             if let Ok(salt_bytes) = base64::engine::general_purpose::STANDARD.decode(&salt_b64) {
@@ -153,24 +155,24 @@ impl MasterPassword {
     pub fn setup(&mut self, password: &str) -> Result<()> {
         // Generate salt for verification hash
         let salt = SaltString::generate(&mut OsRng);
-        
+
         // Create Argon2id hasher with OWASP recommended params
         // m=19456 (19MB), t=2, p=1
         let params = Params::new(19456, 2, 1, Some(32))
             .map_err(|e| anyhow!("Failed to create Argon2 params: {}", e))?;
         let argon2 = Argon2::new(Algorithm::Argon2id, Version::V0x13, params);
-        
+
         // Hash the password
         let hash = argon2
             .hash_password(password.as_bytes(), &salt)
             .map_err(|e| anyhow!("Failed to hash password: {}", e))?
             .to_string();
-        
+
         // Generate separate salt for key derivation
         let mut kdf_salt = [0u8; 32];
         use rand::RngCore;
         OsRng.fill_bytes(&mut kdf_salt);
-        
+
         // Try to store in keyring first
         if !self.use_file_storage {
             match self.try_store_in_keyring(&hash, &kdf_salt) {
@@ -185,12 +187,12 @@ impl MasterPassword {
                 }
             }
         }
-        
+
         // Store in file
         self.store_in_file(&hash, &kdf_salt)?;
         self.cached_hash = Some(hash);
         self.kdf_salt = Some(kdf_salt);
-        
+
         Ok(())
     }
 
@@ -200,7 +202,7 @@ impl MasterPassword {
         hash_entry
             .set_password(hash)
             .map_err(|e| anyhow!("Failed to store in keyring: {}", e))?;
-        
+
         use base64::Engine;
         let salt_b64 = base64::engine::general_purpose::STANDARD.encode(kdf_salt);
         let salt_entry = keyring::Entry::new(KEYRING_SERVICE, "kdf_salt")
@@ -208,54 +210,58 @@ impl MasterPassword {
         salt_entry
             .set_password(&salt_b64)
             .map_err(|e| anyhow!("Failed to store in keyring: {}", e))?;
-        
+
         Ok(())
     }
 
     fn store_in_file(&self, hash: &str, kdf_salt: &[u8; 32]) -> Result<()> {
         use base64::Engine;
         let salt_b64 = base64::engine::general_purpose::STANDARD.encode(kdf_salt);
-        
+
         let file = MasterPasswordFile {
             hash: Some(hash.to_string()),
             kdf_salt: Some(salt_b64),
         };
-        
+
         file.save()
     }
 
     /// Verify the master password
     pub fn verify(&self, password: &str) -> Result<bool> {
-        let hash_str = self.cached_hash
+        let hash_str = self
+            .cached_hash
             .as_ref()
             .ok_or_else(|| anyhow!("No master password set"))?;
-        
+
         let parsed_hash = PasswordHash::new(hash_str)
             .map_err(|e| anyhow!("Failed to parse stored hash: {}", e))?;
-        
+
         // Use same params for verification
         let params = Params::new(19456, 2, 1, Some(32))
             .map_err(|e| anyhow!("Failed to create Argon2 params: {}", e))?;
         let argon2 = Argon2::new(Algorithm::Argon2id, Version::V0x13, params);
-        
-        Ok(argon2.verify_password(password.as_bytes(), &parsed_hash).is_ok())
+
+        Ok(argon2
+            .verify_password(password.as_bytes(), &parsed_hash)
+            .is_ok())
     }
 
     /// Derive an encryption key from the master password
     pub fn derive_encryption_key(&self, password: &str) -> Result<[u8; 32]> {
-        let kdf_salt = self.kdf_salt
+        let kdf_salt = self
+            .kdf_salt
             .ok_or_else(|| anyhow!("No KDF salt available"))?;
-        
+
         // Use Argon2id for key derivation with same security params
         let params = Params::new(19456, 2, 1, Some(32))
             .map_err(|e| anyhow!("Failed to create Argon2 params: {}", e))?;
         let argon2 = Argon2::new(Algorithm::Argon2id, Version::V0x13, params);
-        
+
         let mut key = [0u8; 32];
         argon2
             .hash_password_into(password.as_bytes(), &kdf_salt, &mut key)
             .map_err(|e| anyhow!("Failed to derive encryption key: {}", e))?;
-        
+
         Ok(key)
     }
 }

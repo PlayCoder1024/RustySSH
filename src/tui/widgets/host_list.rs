@@ -20,7 +20,7 @@ impl HostListState {
             self.selected = None;
             return;
         }
-        
+
         self.selected = Some(match self.selected {
             Some(i) => (i + 1).min(len - 1),
             None => 0,
@@ -33,7 +33,7 @@ impl HostListState {
             self.selected = None;
             return;
         }
-        
+
         self.selected = Some(match self.selected {
             Some(i) => i.saturating_sub(1),
             None => 0,
@@ -89,21 +89,24 @@ impl<'a> StatefulWidget for HostList<'a> {
 
     fn render(self, area: Rect, buf: &mut Buffer, state: &mut Self::State) {
         // Create list items
-        let items: Vec<ListItem> = self.hosts
+        let items: Vec<ListItem> = self
+            .hosts
             .iter()
             .map(|host| {
                 let line = Line::from(vec![
                     Span::raw("󰌘 "),
                     Span::styled(&host.name, Style::default().add_modifier(Modifier::BOLD)),
                     Span::raw(" - "),
-                    Span::styled(host.connection_string(), Style::default().fg(Color::DarkGray)),
+                    Span::styled(
+                        host.connection_string(),
+                        Style::default().fg(Color::DarkGray),
+                    ),
                 ]);
                 ListItem::new(line)
             })
             .collect();
 
-        let mut list = List::new(items)
-            .highlight_style(self.highlight_style);
+        let mut list = List::new(items).highlight_style(self.highlight_style);
 
         if let Some(symbol) = self.highlight_symbol {
             list = list.highlight_symbol(symbol);
@@ -114,11 +117,10 @@ impl<'a> StatefulWidget for HostList<'a> {
         }
 
         // Convert our state to ratatui's ListState
-        let mut list_state = ratatui::widgets::ListState::default()
-            .with_selected(state.selected);
-        
+        let mut list_state = ratatui::widgets::ListState::default().with_selected(state.selected);
+
         StatefulWidget::render(list, area, buf, &mut list_state);
-        
+
         // Update our state from ratatui's
         state.selected = list_state.selected();
     }

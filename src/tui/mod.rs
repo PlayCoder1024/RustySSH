@@ -1,9 +1,9 @@
 //! Terminal UI module
 
-mod theme;
-mod icons;
 pub mod highlight;
+mod icons;
 pub mod terminal_render;
+mod theme;
 pub mod ui;
 pub mod views;
 pub mod widgets;
@@ -20,9 +20,9 @@ use crossterm::{
 use ratatui::prelude::*;
 use std::io::{self, stdout, Stdout};
 
-pub use theme::{Theme, gruvbox_dark, dracula, nord};
-pub use icons::Icons;
 pub use highlight::TerminalHighlightConfig;
+pub use icons::Icons;
+pub use theme::{dracula, gruvbox_dark, nord, Theme};
 pub use ui::{render, render_with_state};
 
 /// Terminal wrapper for ratatui
@@ -35,7 +35,7 @@ impl Tui {
     pub fn new() -> Result<Self> {
         let backend = CrosstermBackend::new(stdout());
         let terminal = Terminal::new(backend)?;
-        
+
         Ok(Self { terminal })
     }
 
@@ -48,10 +48,10 @@ impl Tui {
             EnableMouseCapture,
             PushKeyboardEnhancementFlags(KeyboardEnhancementFlags::DISAMBIGUATE_ESCAPE_CODES)
         )?;
-        
+
         // Clear and hide cursor
         self.terminal.clear()?;
-        
+
         Ok(())
     }
 
@@ -64,9 +64,9 @@ impl Tui {
             DisableMouseCapture,
             PopKeyboardEnhancementFlags
         )?;
-        
+
         self.terminal.show_cursor()?;
-        
+
         Ok(())
     }
 
