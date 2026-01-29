@@ -102,6 +102,10 @@ pub struct RenderState {
     pub settings_item: usize,
     /// Settings dropdown is open
     pub settings_dropdown_open: bool,
+    /// Can navigate back
+    pub can_go_back: bool,
+    /// Can navigate forward
+    pub can_go_forward: bool,
 }
 
 /// Snapshot of a file pane for rendering
@@ -195,7 +199,9 @@ pub struct App {
     /// Active SFTP host ID (for which host the SFTP view is showing)
     pub active_sftp_host: Option<Uuid>,
     /// View history stack for back navigation
-    pub view_history: Vec<View>,
+    pub view_back_history: Vec<View>,
+    /// View history stack for forward navigation
+    pub view_forward_history: Vec<View>,
     /// Session passwords for SFTP reuse (cleared on disconnect)
     session_passwords: HashMap<Uuid, String>,
     /// Order of sessions for consistent tab display
@@ -291,7 +297,8 @@ impl App {
             file_browser: None,
             transfer_queue: TransferQueue::default(),
             active_sftp_host: None,
-            view_history: Vec::new(),
+            view_back_history: Vec::new(),
+            view_forward_history: Vec::new(),
             session_passwords: HashMap::new(),
             session_order: Vec::new(),
             escape_prefix_active: false,
@@ -337,24 +344,42 @@ impl App {
         self.all_hosts().get(self.selected_host_index).copied()
     }
 
-    /// Push current view to history and switch to new view
-    fn push_view(&mut self, new_view: View) {
+    /// Navigate to a new view (clears forward history)
+    fn navigate_to(&mut self, new_view: View) {
         // Don't push if same view
         if self.view != new_view {
-            self.view_history.push(self.view);
+            self.view_back_history.push(self.view);
+            self.view_forward_history.clear();
             self.view = new_view;
         }
     }
 
-    /// Pop view from history (go back)
-    fn pop_view(&mut self) {
-        if let Some(prev_view) = self.view_history.pop() {
+    /// Navigate back in history
+    fn navigate_back(&mut self) {
+        if let Some(prev_view) = self.view_back_history.pop() {
+            self.view_forward_history.push(self.view);
             self.view = prev_view;
         } else {
-            // Default to connections if no history
-            self.view = View::Connections;
+            // Default to connections if no history and we are in a sub-view
+            // But if we are already essentially at root (Connections), do nothing or handled by UI
+            if self.view != View::Connections && self.view_back_history.is_empty() {
+                 // Check if we just want to go back to "home" equivalent
+                 // For now, let's just make sure we don't get stuck if history is empty but we aren't in connections view
+                 // self.view = View::Connections; 
+                 // Actually the request implies a stack. If stack is empty, we stay.
+            }
         }
     }
+
+    /// Navigate forward in history
+    fn navigate_forward(&mut self) {
+        if let Some(next_view) = self.view_forward_history.pop() {
+            self.view_back_history.push(self.view);
+            self.view = next_view;
+        }
+    }
+
+
 
     /// Run the main application loop
     pub async fn run(&mut self) -> Result<()> {
@@ -485,6 +510,8 @@ impl App {
                 settings_category: self.settings_category,
                 settings_item: self.settings_item,
                 settings_dropdown_open: self.settings_dropdown_open,
+                can_go_back: !self.view_back_history.is_empty(),
+                can_go_forward: !self.view_forward_history.is_empty(),
             };
 
             // Render UI
@@ -620,6 +647,22 @@ impl App {
 
                 // Handle Ctrl+C/Q - only quit from non-session views
                 // In session view, forward Ctrl+C to remote server
+                // Handle Global Navigation: Alt+Left (Back), Alt+Right (Forward)
+                // User explicitly requested to override terminal for these keys
+                if key.modifiers.contains(KeyModifiers::ALT) {
+                    match key.code {
+                        KeyCode::Left => {
+                            self.navigate_back();
+                            return Ok(());
+                        }
+                        KeyCode::Right => {
+                            self.navigate_forward();
+                            return Ok(());
+                        }
+                        _ => {}
+                    }
+                }
+
                 if key.modifiers.contains(KeyModifiers::CONTROL) {
                     match key.code {
                         KeyCode::Char('c') => {
@@ -827,8 +870,31 @@ impl App {
                     }
                 }
             }
-            // Mouse button up - finish selection
+            // Mouse button up - finish selection or handle click
             Up(MouseButton::Left) => {
+                // Check for status bar clicks (navigation arrows)
+                if let Ok(size) = self.tui.size() {
+                    if mouse.row == size.height.saturating_sub(1) {
+                        // Status bar is at the bottom
+                        // Layout: " < >  ..."
+                        // Col 0: " "
+                        // Col 1: "<" (Back)
+                        // Col 2: " "
+                        // Col 3: ">" (Forward)
+                        match mouse.column {
+                            1 => {
+                                self.navigate_back();
+                                return Ok(());
+                            }
+                            3 => {
+                                self.navigate_forward();
+                                return Ok(());
+                            }
+                            _ => {}
+                        }
+                    }
+                }
+
                 if self.view == View::Session {
                     if let Some(session_id) = self.active_session {
                         if let Some(session) = self.sessions.get_mut(session_id) {
@@ -1559,7 +1625,8 @@ impl App {
                 // Switch to session view
                 self.active_session = Some(session_id);
                 self.session_order.push(session_id);
-                self.view = View::Session;
+                // Use navigate_to to ensure connections view is saved in history
+                self.navigate_to(View::Session);
                 self.status_message = Some(format!("Connected to {}", host_name));
 
                 // Store password for SFTP reuse
@@ -1598,7 +1665,7 @@ impl App {
         // Check if we already have an SFTP session for this host
         if self.sftp_sessions.get_by_host(host_id).is_some() {
             self.active_sftp_host = Some(host_id);
-            self.push_view(View::Sftp);
+            self.navigate_to(View::Sftp);
 
             // Initialize file browser if needed
             if self.file_browser.is_none() {
@@ -1797,7 +1864,7 @@ impl App {
                 browser.right.sort_entries();
 
                 self.file_browser = Some(browser);
-                self.push_view(View::Sftp);
+                self.navigate_to(View::Sftp);
                 self.status_message = Some(format!("SFTP connected to {}", host_name));
             }
             Err(e) => {
@@ -1945,12 +2012,6 @@ impl App {
                     self.switch_to_prev_session();
                     return Ok(());
                 }
-                // 1-9 - Jump to session by index
-                KeyCode::Char(c) if c.is_ascii_digit() && c != '0' => {
-                    let index = (c as usize) - ('1' as usize);
-                    self.switch_to_session_index(index);
-                    return Ok(());
-                }
                 // l - Show session list
                 KeyCode::Char('l') | KeyCode::Char('L') => {
                     self.session_list_visible = true;
@@ -1972,12 +2033,6 @@ impl App {
                     // Fall through to normal key handling
                 }
             }
-        }
-
-        // Check for Shift+Esc to return to connections (legacy behavior)
-        if key.code == KeyCode::Esc && key.modifiers.contains(KeyModifiers::SHIFT) {
-            self.view = View::Connections;
-            return Ok(());
         }
 
         // Check for Shift+F to open SFTP for current session's host
@@ -2143,11 +2198,7 @@ impl App {
         match key.code {
             // Navigation keys
             KeyCode::Esc => {
-                self.pop_view();
-                // Clear active SFTP host only if not returning to SFTP
-                if self.view != View::Sftp {
-                    self.active_sftp_host = None;
-                }
+                self.navigate_back();
             }
             KeyCode::Char('?') => self.view = View::Help,
 

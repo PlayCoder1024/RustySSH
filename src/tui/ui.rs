@@ -121,10 +121,26 @@ fn render_status_bar(frame: &mut Frame, app: &App, area: Rect) {
         .width
         .saturating_sub(hints_len as u16 + right_len as u16);
 
+    // Navigation arrows
+    let back_style = if !app.view_back_history.is_empty() {
+        style
+    } else {
+        style.fg(Color::DarkGray)
+    };
+    let fwd_style = if !app.view_forward_history.is_empty() {
+        style
+    } else {
+        style.fg(Color::DarkGray)
+    };
+
     let spans = vec![
         Span::styled(" ", style),
+        Span::styled("<", back_style),
+        Span::styled(" ", style),
+        Span::styled(">", fwd_style),
+        Span::styled("  ", style),
         Span::styled(hints, style),
-        Span::styled(" ".repeat(spacing as usize), style),
+        Span::styled(" ".repeat(spacing.saturating_sub(6) as usize), style), // Adjust spacing for arrows (approx 6 chars)
         Span::styled(&status_right, style),
     ];
 
@@ -160,7 +176,7 @@ fn render_status_bar_state(frame: &mut Frame, state: &RenderState, area: Rect) {
             if state.escape_prefix_active {
                 format!("{}Ctrl+B: n:Next p:Prev l:List c:Connect w:Close", kb)
             } else {
-                format!("{}Ctrl+B:Prefix  Shift+Esc:Back  Shift+F:SFTP", kb)
+                format!("{}Ctrl+B:Prefix  Alt+Left:Back  Shift+F:SFTP", kb)
             }
         }
         View::Sftp => format!(
@@ -184,10 +200,26 @@ fn render_status_bar_state(frame: &mut Frame, state: &RenderState, area: Rect) {
         .width
         .saturating_sub(hints_len as u16 + right_len as u16);
 
+    // Navigation arrows
+    let back_style = if state.can_go_back {
+        style
+    } else {
+        style.fg(Color::DarkGray)
+    };
+    let fwd_style = if state.can_go_forward {
+        style
+    } else {
+        style.fg(Color::DarkGray)
+    };
+
     let spans = vec![
         Span::styled(" ", style),
+        Span::styled("<", back_style),
+        Span::styled(" ", style),
+        Span::styled(">", fwd_style),
+        Span::styled("  ", style),
         Span::styled(hints, style),
-        Span::styled(" ".repeat(spacing as usize), style),
+        Span::styled(" ".repeat(spacing.saturating_sub(6) as usize), style), // Adjust spacing
         Span::styled(&status_right, style),
     ];
 
