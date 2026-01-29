@@ -599,7 +599,7 @@ impl App {
                                 self.state = AppState::Quit;
                             }
                         }
-                        KeyCode::Char('q') => {
+                        KeyCode::Char('q') | KeyCode::Char('Q') => {
                             // Ctrl+Q always quits (escape hatch from session)
                             self.state = AppState::Quit;
                         }
@@ -841,7 +841,6 @@ impl App {
         let host_count = self.all_hosts().len();
 
         match key.code {
-            KeyCode::Char('q') => self.state = AppState::Quit,
             KeyCode::Char('?') => self.view = View::Help,
             KeyCode::Char('s') => self.view = View::Settings,
             KeyCode::Char('K') => self.view = View::Keys, // Shift+K for Keys view
