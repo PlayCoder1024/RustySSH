@@ -22,7 +22,7 @@ ratatui = "0.26"
 crossterm = "0.27"
 
 # Terminal emulation
-vt100 = "0.15"
+vt100 = "0.16.2"
 
 # Serialization/Config
 serde = { version = "1", features = ["derive"] }

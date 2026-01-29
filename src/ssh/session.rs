@@ -110,7 +110,7 @@ impl Session {
     /// Process received data through VT100 parser
     pub fn process_data(&mut self, data: &[u8]) {
         // Auto-scroll to bottom when new data arrives
-        self.vt.set_scrollback(0);
+        self.vt.screen_mut().set_scrollback(0);
         self.scroll_offset = 0;
         // Process through VT100
         self.vt.process(data);
@@ -146,28 +146,42 @@ impl Session {
     pub fn resize(&mut self, cols: u16, rows: u16) {
         self.cols = cols;
         self.rows = rows;
-        self.vt.set_size(rows, cols);
+        self.vt.screen_mut().set_size(rows, cols);
     }
 
     /// Scroll up (view older content)
     pub fn scroll_up(&mut self, lines: usize) {
         // vt100's scrollback() returns current scroll position
-        // Use set_scrollback() to scroll into history
         let current = self.vt.screen().scrollback();
-        self.vt.set_scrollback(current + lines);
+        
+        // Probe for actual scrollback length since it's not exposed
+        // This is safe because set_scrollback clamps valid values
+        self.vt.screen_mut().set_scrollback(usize::MAX);
+        let max_scrollback = self.vt.screen().scrollback();
+        
+        // Restore current if we weren't just checking max
+        if current < max_scrollback {
+             self.vt.screen_mut().set_scrollback(current);
+        }
+
+        // Calculate new offset and clamp
+        let new_offset = current.saturating_add(lines);
+        let clamped_offset = new_offset.min(max_scrollback);
+        
+        self.vt.screen_mut().set_scrollback(clamped_offset);
         self.scroll_offset = self.vt.screen().scrollback();
     }
 
     /// Scroll down (view newer content)
     pub fn scroll_down(&mut self, lines: usize) {
         let current = self.vt.screen().scrollback();
-        self.vt.set_scrollback(current.saturating_sub(lines));
+        self.vt.screen_mut().set_scrollback(current.saturating_sub(lines));
         self.scroll_offset = self.vt.screen().scrollback();
     }
 
     /// Scroll to bottom
     pub fn scroll_to_bottom(&mut self) {
-        self.vt.set_scrollback(0);
+        self.vt.screen_mut().set_scrollback(0);
         self.scroll_offset = 0;
     }
 
@@ -266,9 +280,9 @@ impl Session {
         // Calculate scrollback position
         // Higher scrollback = older content (scrolled up more)
         if line_offset < visible_rows / 2 {
-            self.vt.set_scrollback(line_offset);
+            self.vt.screen_mut().set_scrollback(line_offset);
         } else {
-            self.vt.set_scrollback(line_offset.saturating_sub(visible_rows / 2));
+            self.vt.screen_mut().set_scrollback(line_offset.saturating_sub(visible_rows / 2));
         }
         self.scroll_offset = self.vt.screen().scrollback();
     }
