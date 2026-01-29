@@ -1,6 +1,5 @@
 //! SFTP file transfer operations
 
-use anyhow::Result;
 use chrono::{DateTime, Utc};
 use std::collections::VecDeque;
 use std::path::PathBuf;

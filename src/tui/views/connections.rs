@@ -436,7 +436,7 @@ fn render_host_list_state(frame: &mut Frame, state: &RenderState, area: Rect) {
             .iter()
             .map(|g| g.hosts.len())
             .sum::<usize>();
-    let host_count = format!(" [{}] ", total_hosts);
+    let _host_count = format!(" [{}] ", total_hosts);
 
     let block = Block::default()
         .title(title)
@@ -766,7 +766,7 @@ fn render_details_panel_state(frame: &mut Frame, state: &RenderState, area: Rect
 
 /// Render the connections view
 pub fn render(frame: &mut Frame, app: &App, area: Rect) {
-    let theme = &app.theme;
+    let _theme = &app.theme;
 
     // Main layout with side panel
     let chunks = Layout::default()

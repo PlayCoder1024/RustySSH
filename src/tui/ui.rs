@@ -2,7 +2,7 @@
 
 use crate::app::{App, RenderState, View};
 use ratatui::prelude::*;
-use ratatui::widgets::{Block, Borders, Paragraph};
+use ratatui::widgets::{Block, Paragraph};
 
 use super::views;
 

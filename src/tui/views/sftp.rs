@@ -1,8 +1,8 @@
 //! SFTP file browser view
 
-use crate::app::{App, FileBrowserSnapshot, FilePaneSnapshot, RenderState};
+use crate::app::{App, FilePaneSnapshot, RenderState};
 use ratatui::prelude::*;
-use ratatui::widgets::{Block, Borders, Cell, Gauge, Padding, Paragraph, Row, Table, TableState};
+use ratatui::widgets::{Block, Borders, Cell, Padding, Paragraph, Row, Table, TableState};
 
 /// Render the SFTP view with RenderState
 pub fn render_state(frame: &mut Frame, state: &RenderState, area: Rect) {
@@ -275,7 +275,7 @@ fn render_transfer_queue_state(frame: &mut Frame, state: &RenderState, area: Rec
 
 /// Render the SFTP view (legacy function using App directly)
 pub fn render(frame: &mut Frame, app: &App, area: Rect) {
-    let theme = &app.theme;
+    let _theme = &app.theme;
 
     // Dual pane layout
     let chunks = Layout::default()

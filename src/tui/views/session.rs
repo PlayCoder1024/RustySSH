@@ -115,7 +115,7 @@ pub fn render_state(frame: &mut Frame, state: &RenderState, area: Rect) -> Optio
 
 /// Render the session view
 pub fn render(frame: &mut Frame, app: &App, area: Rect) {
-    let theme = &app.theme;
+    let _theme = &app.theme;
 
     // Get active sessions
     let sessions = app.sessions.list();
@@ -178,7 +178,7 @@ fn render_tabs(frame: &mut Frame, app: &App, area: Rect) {
     let titles: Vec<Line> = sessions
         .iter()
         .enumerate()
-        .map(|(i, session)| {
+        .map(|(_i, session)| {
             let is_active = app.active_session == Some(session.id);
             let style = if is_active {
                 theme.selected()

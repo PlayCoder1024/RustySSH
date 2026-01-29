@@ -1,6 +1,6 @@
 //! SSH tunneling (port forwarding)
 
-use anyhow::{anyhow, Result};
+use anyhow::Result;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::net::SocketAddr;

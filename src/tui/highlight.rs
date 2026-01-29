@@ -191,7 +191,7 @@ pub fn highlight_line<'a>(
     }
 
     let mut spans: Vec<Span<'a>> = Vec::new();
-    let mut remaining = line;
+    let _remaining = line;
     let mut last_end = 0;
 
     // Find all keyword matches

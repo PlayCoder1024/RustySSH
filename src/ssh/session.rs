@@ -3,7 +3,6 @@
 use anyhow::Result;
 use chrono::{DateTime, Utc};
 use std::collections::{HashMap, VecDeque};
-use std::io::{Read, Write};
 use uuid::Uuid;
 use vt100::Parser;
 
@@ -256,7 +255,7 @@ impl Session {
     /// lines from the top of scrollback (0 = oldest line in scrollback)
     pub fn get_all_content_for_search(&self) -> Vec<String> {
         let screen = self.vt.screen();
-        let (rows, cols) = screen.size();
+        let (_rows, cols) = screen.size();
 
         // Build content line by line using the rows() method
         screen.rows(0, cols).collect()

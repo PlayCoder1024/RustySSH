@@ -8,7 +8,7 @@ use crate::ssh::{ConnectionPool, ProxyConnection, SessionManager, SshConnection}
 use crate::tui::highlight::{highlight_styled_line, TerminalHighlightConfig};
 use crate::tui::terminal_render::render_screen_to_lines_with_selection;
 use crate::tui::{Icons, Theme, Tui};
-use anyhow::{anyhow, Result};
+use anyhow::Result;
 use crossterm::event::{KeyCode, KeyModifiers, MouseEvent, MouseEventKind};
 use std::collections::HashMap;
 use std::io::{Read, Write};
@@ -2383,7 +2383,7 @@ impl App {
             .map(|b| b.inactive_pane().path.clone())
             .unwrap_or_default();
 
-        let direction = if is_upload {
+        let _direction = if is_upload {
             crate::sftp::TransferDirection::Upload
         } else {
             crate::sftp::TransferDirection::Download
@@ -2400,7 +2400,7 @@ impl App {
 
         let file_count = source_files.len();
 
-        for (source, size) in source_files {
+        for (source, _size) in source_files {
             let filename = source
                 .file_name()
                 .map(|n| n.to_os_string())
@@ -2557,7 +2557,7 @@ impl App {
     }
 
     async fn handle_settings_key(&mut self, key: crossterm::event::KeyEvent) -> Result<()> {
-        use crate::tui::{dracula, gruvbox_dark, nord};
+        
 
         // Number of categories and items per category
         const CATEGORIES: &[&str] = &["Appearance", "SSH", "Logging"];
@@ -2734,7 +2734,7 @@ impl App {
 
     /// Apply next option in dropdown
     async fn apply_dropdown_next(&mut self) -> Result<()> {
-        use crate::tui::{dracula, gruvbox_dark, nord};
+        
         const THEMES: &[&str] = &["tokyo-night", "gruvbox-dark", "dracula", "nord"];
         const GRAPH_STYLES: &[&str] = &["braille", "block", "ascii"];
         const LOG_FORMATS: &[&str] = &["timestamped", "raw"];
@@ -2781,7 +2781,7 @@ impl App {
 
     /// Apply previous option in dropdown
     async fn apply_dropdown_prev(&mut self) -> Result<()> {
-        use crate::tui::{dracula, gruvbox_dark, nord};
+        
         const THEMES: &[&str] = &["tokyo-night", "gruvbox-dark", "dracula", "nord"];
         const GRAPH_STYLES: &[&str] = &["braille", "block", "ascii"];
         const LOG_FORMATS: &[&str] = &["timestamped", "raw"];

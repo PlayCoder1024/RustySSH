@@ -108,7 +108,7 @@ fn render_categories(frame: &mut Frame, state: &RenderState, area: Rect) {
 
 /// Render settings content for selected category
 fn render_content(frame: &mut Frame, state: &RenderState, area: Rect) {
-    let theme = &state.theme;
+    let _theme = &state.theme;
     let content_area = Rect::new(
         area.x + 2,
         area.y,

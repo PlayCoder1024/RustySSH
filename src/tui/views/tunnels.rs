@@ -2,7 +2,7 @@
 
 use crate::app::{App, RenderState};
 use ratatui::prelude::*;
-use ratatui::widgets::{Block, Borders, Cell, Gauge, Padding, Paragraph, Row, Table};
+use ratatui::widgets::{Block, Borders, Cell, Padding, Paragraph, Row, Table};
 
 /// Render tunnels view with RenderState
 pub fn render_state(frame: &mut Frame, state: &RenderState, area: Rect) {

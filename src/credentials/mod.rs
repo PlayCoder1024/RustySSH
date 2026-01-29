@@ -12,7 +12,6 @@ pub use master::MasterPassword;
 pub use vault::{CredentialVault, StoredCredential};
 
 use anyhow::Result;
-use std::collections::HashMap;
 use uuid::Uuid;
 
 /// Service name for keyring storage
