@@ -136,4 +136,9 @@ impl EventHandler {
     pub async fn next(&mut self) -> Option<AppEvent> {
         self.receiver.recv().await
     }
+
+    /// Try to get next event without blocking
+    pub fn try_next(&mut self) -> Option<AppEvent> {
+        self.receiver.try_recv().ok()
+    }
 }

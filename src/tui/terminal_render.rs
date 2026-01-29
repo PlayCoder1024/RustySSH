@@ -96,8 +96,26 @@ impl StyledCell {
 
 /// Render a vt100 screen to styled ratatui Lines
 pub fn render_screen_to_lines(screen: &vt100::Screen) -> Vec<Line<'static>> {
+    render_screen_to_lines_impl(screen, None)
+}
+
+/// Render a vt100 screen to styled ratatui Lines with selection highlighting
+pub fn render_screen_to_lines_with_selection(
+    screen: &vt100::Screen,
+    selection: Option<((u16, u16), (u16, u16))>,
+) -> Vec<Line<'static>> {
+    render_screen_to_lines_impl(screen, selection)
+}
+
+fn render_screen_to_lines_impl(
+    screen: &vt100::Screen,
+    selection: Option<((u16, u16), (u16, u16))>,
+) -> Vec<Line<'static>> {
     let mut lines = Vec::new();
     let (rows, cols) = screen.size();
+
+    // Unwrap selection for faster access in loop
+    let selection_unwrapped = selection.map(|((sr, sc), (er, ec))| (sr, sc, er, ec));
 
     for row in 0..rows {
         let mut spans: Vec<Span<'static>> = Vec::new();
@@ -105,8 +123,36 @@ pub fn render_screen_to_lines(screen: &vt100::Screen) -> Vec<Line<'static>> {
         let mut current_style: Option<StyledCell> = None;
 
         for col in 0..cols {
+            // Check selection state
+            let is_selected = if let Some((sr, sc, er, ec)) = selection_unwrapped {
+                if row >= sr && row <= er {
+                    if sr == er {
+                        // Single line
+                        col >= sc && col <= ec
+                    } else if row == sr {
+                        // First line
+                        col >= sc
+                    } else if row == er {
+                        // Last line
+                        col <= ec
+                    } else {
+                        // Middle line
+                        true
+                    }
+                } else {
+                    false
+                }
+            } else {
+                false
+            };
+
             if let Some(cell) = screen.cell(row, col) {
-                let styled_cell = StyledCell::from_vt100_cell(cell);
+                let mut styled_cell = StyledCell::from_vt100_cell(cell);
+                
+                // Apply selection highlighting by inverting colors
+                if is_selected {
+                    styled_cell.inverse = !styled_cell.inverse;
+                }
                 
                 // Get content (handle empty cells)
                 let content = if styled_cell.content.is_empty() {
@@ -133,26 +179,34 @@ pub fn render_screen_to_lines(screen: &vt100::Screen) -> Vec<Line<'static>> {
                 }
             } else {
                 // No cell, add space
+                // Create a default style for empty space, potentially selected
+                let mut empty_style = StyledCell {
+                    content: " ".to_string(),
+                    fg: None,
+                    bg: None,
+                    bold: false,
+                    italic: false,
+                    underline: false,
+                    inverse: false,
+                };
+
+                if is_selected {
+                    empty_style.inverse = true;
+                }
+
                 if let Some(prev) = &current_style {
-                    if prev.fg.is_none() && prev.bg.is_none() && !prev.bold && !prev.italic && !prev.underline {
+                    if prev.same_style(&empty_style) {
                         current_text.push(' ');
                     } else {
                         if !current_text.is_empty() {
                             spans.push(Span::styled(current_text.clone(), prev.to_style()));
                         }
                         current_text = " ".to_string();
-                        current_style = Some(StyledCell {
-                            content: " ".to_string(),
-                            fg: None,
-                            bg: None,
-                            bold: false,
-                            italic: false,
-                            underline: false,
-                            inverse: false,
-                        });
+                        current_style = Some(empty_style);
                     }
                 } else {
                     current_text.push(' ');
+                    current_style = Some(empty_style);
                 }
             }
         }
@@ -166,12 +220,17 @@ pub fn render_screen_to_lines(screen: &vt100::Screen) -> Vec<Line<'static>> {
             }
         }
 
-        // Trim trailing whitespace spans for cleaner output
+        // Trim trailing whitespace spans for cleaner output, BUT NOT if they are selected
+        // We only trim if the style is default (not selected)
         while let Some(last) = spans.last() {
-            if last.content.trim().is_empty() {
+            // Check if style is "default" (no inverse, no colors)
+            // If selected (inverse=true), we must preserve it
+            let is_default_style = last.style == Style::default();
+            
+            if is_default_style && last.content.trim().is_empty() {
                 spans.pop();
-            } else {
-                // Trim the last span's trailing whitespace
+            } else if is_default_style {
+                 // Trim the last span's trailing whitespace
                 if let Some(last_span) = spans.last_mut() {
                     let trimmed = last_span.content.trim_end().to_string();
                     if trimmed.is_empty() {
@@ -181,108 +240,13 @@ pub fn render_screen_to_lines(screen: &vt100::Screen) -> Vec<Line<'static>> {
                     }
                 }
                 break;
-            }
-        }
-
-    lines.push(Line::from(spans));
-    }
-
-    lines
-}
-
-/// Render a vt100 screen to styled ratatui Lines with selection highlighting
-pub fn render_screen_to_lines_with_selection(
-    screen: &vt100::Screen,
-    selection: Option<((u16, u16), (u16, u16))>,
-) -> Vec<Line<'static>> {
-    // Fast path: if no selection, use the fast rendering function
-    if selection.is_none() {
-        return render_screen_to_lines(screen);
-    }
-    
-    // Get selection bounds
-    let ((start_row, start_col), (end_row, end_col)) = selection.unwrap();
-    
-    // First render all lines normally (fast path)
-    let mut lines = render_screen_to_lines(screen);
-    let (rows, cols) = screen.size();
-    
-    // Now overlay selection highlighting only on affected rows
-    // This is much faster than processing every cell
-    for row in start_row..=end_row.min(rows - 1) {
-        let row_idx = row as usize;
-        if row_idx >= lines.len() {
-            continue;
-        }
-        
-        // Determine selection range for this row
-        let (sel_start, sel_end) = if start_row == end_row {
-            // Single line selection
-            (start_col, end_col)
-        } else if row == start_row {
-            // First line: from start_col to end of line
-            (start_col, cols - 1)
-        } else if row == end_row {
-            // Last line: from start to end_col
-            (0, end_col)
-        } else {
-            // Middle lines: entire row selected
-            (0, cols - 1)
-        };
-        
-        // Get the raw content from vt100 for this row
-        let mut new_spans: Vec<Span<'static>> = Vec::new();
-        let mut current_col = 0u16;
-        
-        for span in lines[row_idx].spans.iter() {
-            let content = span.content.to_string();
-            let span_len = content.chars().count() as u16;
-            let span_end = current_col + span_len;
-            
-            // Check if this span overlaps with selection
-            if span_end <= sel_start || current_col > sel_end {
-                // No overlap, keep span as-is
-                new_spans.push(span.clone());
-            } else if current_col >= sel_start && span_end <= sel_end + 1 {
-                // Entire span is selected
-                let style = span.style.add_modifier(ratatui::style::Modifier::REVERSED);
-                new_spans.push(Span::styled(content, style));
             } else {
-                // Partial overlap - split the span
-                let chars: Vec<char> = content.chars().collect();
-                let mut i = 0u16;
-                
-                while i < span_len {
-                    let abs_col = current_col + i;
-                    let is_selected = abs_col >= sel_start && abs_col <= sel_end;
-                    
-                    // Find the end of the current segment
-                    let mut seg_end = i + 1;
-                    while seg_end < span_len {
-                        let next_col = current_col + seg_end;
-                        let next_selected = next_col >= sel_start && next_col <= sel_end;
-                        if next_selected != is_selected {
-                            break;
-                        }
-                        seg_end += 1;
-                    }
-                    
-                    let segment: String = chars[i as usize..seg_end as usize].iter().collect();
-                    let style = if is_selected {
-                        span.style.add_modifier(ratatui::style::Modifier::REVERSED)
-                    } else {
-                        span.style
-                    };
-                    new_spans.push(Span::styled(segment, style));
-                    i = seg_end;
-                }
+                break;
             }
-            
-            current_col = span_end;
         }
-        
-        lines[row_idx] = Line::from(new_spans);
+
+        lines.push(Line::from(spans));
     }
-    
+
     lines
 }

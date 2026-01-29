@@ -10,7 +10,10 @@ pub mod widgets;
 
 use anyhow::Result;
 use crossterm::{
-    event::{DisableMouseCapture, EnableMouseCapture},
+    event::{
+        DisableMouseCapture, EnableMouseCapture, KeyboardEnhancementFlags,
+        PopKeyboardEnhancementFlags, PushKeyboardEnhancementFlags,
+    },
     execute,
     terminal::{disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen},
 };
@@ -42,7 +45,8 @@ impl Tui {
         execute!(
             io::stdout(),
             EnterAlternateScreen,
-            EnableMouseCapture
+            EnableMouseCapture,
+            PushKeyboardEnhancementFlags(KeyboardEnhancementFlags::DISAMBIGUATE_ESCAPE_CODES)
         )?;
         
         // Clear and hide cursor
@@ -57,7 +61,8 @@ impl Tui {
         execute!(
             io::stdout(),
             LeaveAlternateScreen,
-            DisableMouseCapture
+            DisableMouseCapture,
+            PopKeyboardEnhancementFlags
         )?;
         
         self.terminal.show_cursor()?;
@@ -88,12 +93,14 @@ impl Tui {
 
 impl Drop for Tui {
     fn drop(&mut self) {
+        use crossterm::event::PopKeyboardEnhancementFlags;
         // Best effort cleanup
         let _ = disable_raw_mode();
         let _ = execute!(
             io::stdout(),
             LeaveAlternateScreen,
-            DisableMouseCapture
+            DisableMouseCapture,
+            PopKeyboardEnhancementFlags
         );
     }
 }

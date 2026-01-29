@@ -6,7 +6,7 @@ use crate::credentials::CredentialManager;
 use crate::sftp::{FileBrowser, SftpSession, SftpSessionManager, TransferQueue};
 use crate::ssh::{ConnectionPool, SessionManager, SshConnection, ProxyConnection};
 use crate::tui::{Icons, Theme, Tui};
-use crate::tui::terminal_render::render_screen_to_lines;
+use crate::tui::terminal_render::render_screen_to_lines_with_selection;
 use crate::tui::highlight::{highlight_styled_line, TerminalHighlightConfig};
 use anyhow::{anyhow, Result};
 use crossterm::event::{KeyCode, KeyModifiers, MouseEvent, MouseEventKind};
@@ -216,6 +216,8 @@ pub struct App {
     pub find_matches: Vec<(u16, u16, u16)>,
     /// Terminal content area (for mouse coordinate conversion)
     pub terminal_area: Option<ratatui::layout::Rect>,
+    /// Persistent clipboard instance (for Linux X11 persistence)
+    pub clipboard: Option<arboard::Clipboard>,
 }
 
 impl App {
@@ -227,6 +229,9 @@ impl App {
         let tui = Tui::new()?;
         let events = EventHandler::new(Duration::from_millis(50));
         let credentials = CredentialManager::new().await?;
+        
+        // Initialize clipboard (ignore error, will retry on use if needed)
+        let clipboard = arboard::Clipboard::new().ok();
 
         Ok(Self {
             view: View::default(),
@@ -265,6 +270,7 @@ impl App {
             find_match_index: 0,
             find_matches: Vec::new(),
             terminal_area: None,
+            clipboard,
         })
     }
 
@@ -317,24 +323,30 @@ impl App {
                 icons: self.icons.clone(),
                 config: self.config.clone(),
                 sessions: {
-                    use crate::tui::terminal_render::render_screen_to_lines_with_selection;
                     let highlight_config = TerminalHighlightConfig::default();
                     self.sessions
                         .list()
                         .iter()
                         .map(|s| {
-                            let selection = s.get_selection_for_render();
-                            let raw_lines = render_screen_to_lines_with_selection(s.screen(), selection);
+                            let is_active = Some(s.id) == self.active_session;
+                            let styled_lines = if is_active {
+                                let selection = s.get_selection_for_render();
+                                let raw_lines = render_screen_to_lines_with_selection(s.screen(), selection);
+                                raw_lines
+                                    .into_iter()
+                                    .map(|line| highlight_styled_line(line, &highlight_config))
+                                    .collect()
+                            } else {
+                                Vec::new()
+                            };
+
                             SessionInfo {
                                 id: s.id,
                                 name: s.name.clone(),
-                                styled_lines: raw_lines
-                                    .into_iter()
-                                    .map(|line| highlight_styled_line(line, &highlight_config))
-                                    .collect(),
+                                styled_lines,
                                 cursor_position: s.cursor_position(),
                                 cursor_visible: s.cursor_visible(),
-                                selection,
+                                selection: if is_active { s.get_selection_for_render() } else { None },
                             }
                         })
                         .collect()
@@ -438,7 +450,22 @@ impl App {
 
             // Handle events
             if let Some(event) = self.events.next().await {
+                let is_mouse = matches!(event, AppEvent::Mouse(_));
                 self.handle_event(event).await?;
+                
+                // Process pending events (batch processing)
+                // Only do this for mouse events to avoid input lag/conflicts with key operations (like paste)
+                if is_mouse {
+                    let mut events_processed = 0;
+                    while events_processed < 50 {
+                        if let Some(next_event) = self.events.try_next() {
+                            self.handle_event(next_event).await?;
+                            events_processed += 1;
+                        } else {
+                            break;
+                        }
+                    }
+                }
             }
         }
 
@@ -450,23 +477,40 @@ impl App {
     async fn handle_event(&mut self, event: AppEvent) -> Result<()> {
         match event {
             AppEvent::Key(key) => {
-                // Handle Ctrl+Shift combinations first (copy/paste in session)
-                if self.view == View::Session 
-                    && key.modifiers.contains(KeyModifiers::CONTROL) 
-                    && key.modifiers.contains(KeyModifiers::SHIFT) 
-                {
-                    match key.code {
-                        KeyCode::Char('C') | KeyCode::Char('c') => {
-                            // Copy selected text to clipboard
-                            self.copy_selection_to_clipboard();
-                            return Ok(());
+                // Handle Ctrl+Shift combinations (copy/paste in session)
+                if self.view == View::Session && key.modifiers.contains(KeyModifiers::CONTROL) {
+                    // Check if there is an active selection
+                    let has_selection = if let Some(session_id) = self.active_session {
+                        if let Some(session) = self.sessions.get(session_id) {
+                            session.has_selection()
+                        } else {
+                            false
                         }
-                        KeyCode::Char('V') | KeyCode::Char('v') => {
-                            // Paste from clipboard
-                            self.paste_from_clipboard().await;
-                            return Ok(());
-                        }
-                        _ => {}
+                    } else {
+                        false
+                    };
+
+                    // Check for Copy: 
+                    // 1. Ctrl+Shift+c/C
+                    // 2. Ctrl+C (uppercase implies shift)
+                    // 3. Ctrl+c (lowercase) IF selection is active (Smart Copy)
+                    let is_copy = (key.modifiers.contains(KeyModifiers::SHIFT) && matches!(key.code, KeyCode::Char('c') | KeyCode::Char('C')))
+                        || (key.code == KeyCode::Char('C'))
+                        || (has_selection && key.code == KeyCode::Char('c'));
+                    
+                    // Check for Paste: Ctrl+Shift+v/V OR Ctrl+V (uppercase implies shift)
+                    let is_paste = (key.modifiers.contains(KeyModifiers::SHIFT) && matches!(key.code, KeyCode::Char('v') | KeyCode::Char('V')))
+                        || (key.code == KeyCode::Char('V'));
+                        
+                    if is_copy {
+                        // Copy selected text to clipboard
+                        self.copy_selection_to_clipboard();
+                        return Ok(());
+                    }
+                    if is_paste {
+                        // Paste from clipboard
+                        self.paste_from_clipboard().await;
+                        return Ok(());
                     }
                 }
                 
@@ -496,6 +540,7 @@ impl App {
                         KeyCode::Char('c') => {
                             if self.view == View::Session {
                                 // Forward Ctrl+C (0x03) to remote
+                                // Note: If selection was active, it was handled above as Copy
                                 if let Some(session_id) = self.active_session {
                                     if let Some(channel) = self.channels.get(&session_id) {
                                         let _ = channel.input_tx.send(vec![0x03]);
@@ -2341,21 +2386,62 @@ impl App {
     /// Copy selected text to clipboard
     fn copy_selection_to_clipboard(&mut self) {
         if let Some(session_id) = self.active_session {
-            if let Some(session) = self.sessions.get(session_id) {
+            if let Some(session) = self.sessions.get_mut(session_id) {
                 if let Some(text) = session.get_selected_text() {
+                    // On Linux X11/Wayland, always create a fresh clipboard instance
+                    // to avoid stale X11 connection state that can cause set_text to silently fail.
+                    // The old clipboard instance might have a stale selection owner state.
                     match arboard::Clipboard::new() {
                         Ok(mut clipboard) => {
-                            match clipboard.set_text(&text) {
-                                Ok(_) => {
-                                    self.status_message = Some(format!("Copied {} chars", text.len()));
-                                }
-                                Err(e) => {
+                            // Use cfg to handle Linux-specific clipboard behavior
+                            #[cfg(target_os = "linux")]
+                            {
+                                use arboard::{SetExtLinux, LinuxClipboardKind};
+                                
+                                // Set to both Clipboard (Ctrl+V) and Primary (middle-click) selections
+                                // This matches the behavior users expect on Linux
+                                let clipboard_result = clipboard.set()
+                                    .clipboard(LinuxClipboardKind::Clipboard)
+                                    .text(text.clone());
+                                
+                                if let Err(e) = clipboard_result {
                                     self.status_message = Some(format!("Copy failed: {}", e));
+                                    return;
+                                }
+                                
+                                // Also set primary selection for middle-click paste
+                                // Create another clipboard instance for primary (they can't share)
+                                if let Ok(mut primary_clipboard) = arboard::Clipboard::new() {
+                                    let _ = primary_clipboard.set()
+                                        .clipboard(LinuxClipboardKind::Primary)
+                                        .text(text.clone());
+                                    // Don't need to keep primary clipboard alive - primary selection
+                                    // is typically more transient anyway
+                                }
+                                
+                                self.status_message = Some(format!("Copied {} chars", text.len()));
+                                session.clear_selection();
+                                // CRITICAL: Persist this clipboard instance to keep the background thread alive
+                                // and maintain ownership of the selection on Linux/X11
+                                self.clipboard = Some(clipboard);
+                            }
+                            
+                            #[cfg(not(target_os = "linux"))]
+                            {
+                                match clipboard.set_text(&text) {
+                                    Ok(_) => {
+                                        self.status_message = Some(format!("Copied {} chars", text.len()));
+                                        session.clear_selection();
+                                        self.clipboard = Some(clipboard);
+                                    }
+                                    Err(e) => {
+                                        self.status_message = Some(format!("Copy failed: {}", e));
+                                    }
                                 }
                             }
                         }
                         Err(e) => {
-                            self.status_message = Some(format!("Clipboard error: {}", e));
+                            self.status_message = Some(format!("Clipboard init error: {}", e));
                         }
                     }
                 } else {
@@ -2367,27 +2453,48 @@ impl App {
 
     /// Paste from clipboard to terminal
     async fn paste_from_clipboard(&mut self) {
-        match arboard::Clipboard::new() {
-            Ok(mut clipboard) => {
-                match clipboard.get_text() {
-                    Ok(text) => {
-                        if !text.is_empty() {
-                            // Send pasted text to the active session
-                            if let Some(session_id) = self.active_session {
-                                if let Some(channel) = self.channels.get(&session_id) {
-                                    let _ = channel.input_tx.send(text.into_bytes());
-                                }
-                            }
+        let mut text_to_paste = None;
+        let mut error_msg = None;
+
+        // Try existing clipboard first
+        if let Some(clipboard) = &mut self.clipboard {
+            match clipboard.get_text() {
+                Ok(text) => text_to_paste = Some(text),
+                Err(_) => {
+                    // Ignore error, try creating new instance below
+                }
+            }
+        }
+
+        // If not successful yet, create new instance
+        if text_to_paste.is_none() {
+            match arboard::Clipboard::new() {
+                Ok(mut clipboard) => {
+                    match clipboard.get_text() {
+                        Ok(text) => {
+                            text_to_paste = Some(text);
+                            // Store this clipboard for future reuse
+                            self.clipboard = Some(clipboard);
                         }
+                        Err(e) => error_msg = Some(format!("Paste failed: {}", e)),
                     }
-                    Err(e) => {
-                        self.status_message = Some(format!("Paste failed: {}", e));
+                }
+                Err(e) => error_msg = Some(format!("Clipboard error: {}", e)),
+            }
+        }
+
+        // Handle result
+        if let Some(text) = text_to_paste {
+            if !text.is_empty() {
+                // Send pasted text to the active session
+                if let Some(session_id) = self.active_session {
+                    if let Some(channel) = self.channels.get(&session_id) {
+                        let _ = channel.input_tx.send(text.into_bytes());
                     }
                 }
             }
-            Err(e) => {
-                self.status_message = Some(format!("Clipboard error: {}", e));
-            }
+        } else if let Some(msg) = error_msg {
+            self.status_message = Some(msg);
         }
     }
 
