@@ -383,15 +383,17 @@ impl FilePane {
     }
 
     /// Navigate to parent directory
-    pub fn go_parent(&mut self) -> bool {
+    /// Returns the name of the directory we just left (if any)
+    pub fn go_parent(&mut self) -> Option<String> {
         if let Some(parent) = self.path.parent() {
             if parent != self.path {
+                let old_name = self.path.file_name().map(|n| n.to_string_lossy().to_string());
                 self.path = parent.to_path_buf();
                 self.cursor = 0;
-                return true;
+                return old_name;
             }
         }
-        false
+        None
     }
 
     /// Set the filter string
@@ -410,6 +412,14 @@ impl FilePane {
     pub fn toggle_hidden(&mut self) {
         self.show_hidden = !self.show_hidden;
         self.cursor = 0;
+    }
+
+    /// Set cursor to file with given name
+    pub fn set_cursor_by_name(&mut self, name: &str) {
+        let entries = self.filtered_entries();
+        if let Some(pos) = entries.iter().position(|e| e.name == name) {
+            self.cursor = pos;
+        }
     }
 }
 

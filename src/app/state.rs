@@ -2332,6 +2332,26 @@ impl App {
                 self.handle_sftp_refresh().await?;
             }
 
+            // Quit SFTP connection (q)
+            KeyCode::Char('q') => {
+                if let Some(host_id) = self.active_sftp_host {
+                    self.sftp_sessions.remove_by_host(host_id);
+                    self.active_sftp_host = None;
+                    self.status_message = Some("SFTP connection closed".to_string());
+                    
+                    // Remove all SFTP entries from history to prevent navigating back to a closed session
+                    self.view_back_history.retain(|&v| v != View::Sftp);
+                    self.view_forward_history.retain(|&v| v != View::Sftp);
+
+                    // Navigate back without pushing current View::Sftp to history
+                    if let Some(prev_view) = self.view_back_history.pop() {
+                        self.view = prev_view;
+                    } else {
+                        self.view = View::Connections;
+                    }
+                }
+            }
+
             _ => {}
         }
         Ok(())
@@ -2385,14 +2405,17 @@ impl App {
 
     /// Go to parent directory in SFTP view
     async fn handle_sftp_go_parent(&mut self) -> Result<()> {
-        let changed = if let Some(browser) = &mut self.file_browser {
+        let child_name = if let Some(browser) = &mut self.file_browser {
             browser.active_pane_mut().go_parent()
         } else {
-            false
+            None
         };
 
-        if changed {
+        if let Some(name) = child_name {
             self.handle_sftp_refresh().await?;
+            if let Some(browser) = &mut self.file_browser {
+                browser.active_pane_mut().set_cursor_by_name(&name);
+            }
         }
         Ok(())
     }

@@ -103,7 +103,7 @@ fn render_status_bar(frame: &mut Frame, app: &App, area: Rect) {
             "󰌑 Enter:Connect  e:Edit  n:New  d:Delete  t:Tunnels  f:SFTP  k:Keys  ?:Help"
         }
         View::Session => "󰌑 Shift+Esc:Back  Ctrl+C:Disconnect",
-        View::Sftp => "󰌑 Tab:Switch  Enter:Open  c:Copy  m:Move  d:Delete  Esc:Back",
+        View::Sftp => "󰌑 Tab:Switch  Enter:Open  Backspace:Parent  c:Copy  m:Move  d:Delete  Esc:Back  q:Exit",
         View::Tunnels => "󰌑 Enter:Toggle  n:New  d:Delete  Esc:Back",
         View::Keys => "󰌑 Enter:View  n:Generate  i:Import  d:Delete  Esc:Back",
         View::Settings => "󰌑 Enter:Edit  Esc:Back",
