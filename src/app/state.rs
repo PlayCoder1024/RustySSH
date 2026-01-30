@@ -2711,9 +2711,10 @@ impl App {
     async fn handle_settings_key(&mut self, key: crossterm::event::KeyEvent) -> Result<()> {
         // Number of categories and items per category
         // Number of categories and items per category
-        const CATEGORIES: &[&str] = &["Appearance", "SSH", "Logging", "Keymap"];
-        // Items per category: [Appearance: theme, mouse, status_bar, scrollback, graph_style], [SSH: timeout, keepalive, reconnect], [Logging: enabled, format], [Keymap: none]
-        const ITEMS_PER_CATEGORY: &[usize] = &[5, 3, 2, 0];
+        // Number of categories and items per category
+        const CATEGORIES: &[&str] = &["Appearance", "SSH", "Logging", "Keymap", "About"];
+        // Items per category: [Appearance, SSH, Logging, Keymap, About]
+        const ITEMS_PER_CATEGORY: &[usize] = &[5, 3, 2, 0, 0];
 
         // If dropdown is open, handle dropdown navigation
         if self.settings_dropdown_open {
@@ -2764,15 +2765,19 @@ impl App {
             // Item navigation (Up/Down)
             KeyCode::Up | KeyCode::Char('k') => {
                 let max_items = ITEMS_PER_CATEGORY[self.settings_category];
-                if self.settings_item == 0 {
-                    self.settings_item = max_items - 1;
-                } else {
-                    self.settings_item -= 1;
+                if max_items > 0 {
+                    if self.settings_item == 0 {
+                        self.settings_item = max_items - 1;
+                    } else {
+                        self.settings_item -= 1;
+                    }
                 }
             }
             KeyCode::Down | KeyCode::Char('j') => {
                 let max_items = ITEMS_PER_CATEGORY[self.settings_category];
-                self.settings_item = (self.settings_item + 1) % max_items;
+                if max_items > 0 {
+                    self.settings_item = (self.settings_item + 1) % max_items;
+                }
             }
 
             // Toggle or open dropdown
