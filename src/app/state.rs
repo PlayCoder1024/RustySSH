@@ -2035,8 +2035,8 @@ impl App {
             }
         }
 
-        // Check for Shift+F to open SFTP for current session's host
-        if key.code == KeyCode::Char('F') && key.modifiers.contains(KeyModifiers::SHIFT) {
+        // Check for Alt+f to open SFTP for current session's host
+        if key.code == KeyCode::Char('f') && key.modifiers.contains(KeyModifiers::ALT) {
             // Get the host ID from the current session
             if let Some(session_id) = self.active_session {
                 if let Some(session) = self.sessions.get(session_id) {

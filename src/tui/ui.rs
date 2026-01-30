@@ -176,7 +176,7 @@ fn render_status_bar_state(frame: &mut Frame, state: &RenderState, area: Rect) {
             if state.escape_prefix_active {
                 format!("{}Ctrl+B: n:Next p:Prev l:List c:Connect w:Close", kb)
             } else {
-                format!("{}Ctrl+B:Prefix  Alt+Left:Back  Shift+F:SFTP", kb)
+                format!("{}Ctrl+B:Prefix  Alt+Left:Back  Alt+f:SFTP", kb)
             }
         }
         View::Sftp => format!(
