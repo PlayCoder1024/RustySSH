@@ -5,7 +5,12 @@ use ratatui::prelude::*;
 use ratatui::widgets::{Block, Borders, Clear, Padding, Paragraph};
 
 /// Categories and their items
-const CATEGORIES: &[(&str, &str)] = &[("󰔎 ", "Appearance"), ("󰣀 ", "SSH"), ("󰈙 ", "Logging")];
+const CATEGORIES: &[(&str, &str)] = &[
+    ("󰔎 ", "Appearance"),
+    ("󰣀 ", "SSH"),
+    ("󰈙 ", "Logging"),
+    ("󰌑 ", "Keymap"),
+];
 
 /// Render settings view with RenderState
 pub fn render_state(frame: &mut Frame, state: &RenderState, area: Rect) {
@@ -120,6 +125,7 @@ fn render_content(frame: &mut Frame, state: &RenderState, area: Rect) {
         0 => render_appearance_settings(frame, state, content_area),
         1 => render_ssh_settings(frame, state, content_area),
         2 => render_logging_settings(frame, state, content_area),
+        3 => render_keymap_settings(frame, state, content_area),
         _ => {}
     }
 }
@@ -518,4 +524,100 @@ pub fn render(frame: &mut Frame, app: &crate::app::App, area: Rect) {
         .style(Style::default().bg(theme.bg_main()));
 
     frame.render_widget(block, area);
+}
+
+/// Render keymap settings (Help info)
+fn render_keymap_settings(frame: &mut Frame, state: &RenderState, area: Rect) {
+    let theme = &state.theme;
+
+    // Header
+    let header = Line::from(vec![Span::styled(
+        "Keymap / Quick Start",
+        Style::default()
+            .fg(theme.accent_warning())
+            .add_modifier(Modifier::BOLD | Modifier::UNDERLINED),
+    )]);
+    frame.render_widget(
+        Paragraph::new(header),
+        Rect::new(area.x, area.y, area.width, 1),
+    );
+
+    let content = vec![
+        Line::from(vec![Span::styled(
+            "󰋼 Quick Start",
+            Style::default()
+                .add_modifier(Modifier::BOLD)
+                .fg(theme.fg_bright()),
+        )]),
+        Line::from(""),
+        Line::from(vec![
+            Span::styled("  ", theme.text_dim()),
+            Span::styled("Enter", theme.key_hint()),
+            Span::styled(" Connect to host", theme.text()),
+        ]),
+        Line::from(vec![
+            Span::styled("  ", theme.text_dim()),
+            Span::styled("n", theme.key_hint()),
+            Span::styled("     New connection", theme.text()),
+        ]),
+        Line::from(vec![
+            Span::styled("  ", theme.text_dim()),
+            Span::styled("e", theme.key_hint()),
+            Span::styled("     Edit selected", theme.text()),
+        ]),
+        Line::from(vec![
+            Span::styled("  ", theme.text_dim()),
+            Span::styled("d", theme.key_hint()),
+            Span::styled("     Delete selected", theme.text()),
+        ]),
+        Line::from(""),
+        Line::from(vec![Span::styled(
+            "󰌌 Navigation",
+            Style::default()
+                .add_modifier(Modifier::BOLD)
+                .fg(theme.fg_bright()),
+        )]),
+        Line::from(""),
+        Line::from(vec![
+            Span::styled("  ", theme.text_dim()),
+            Span::styled("j/k/↑/↓", theme.key_hint()),
+            Span::styled(" Navigate lists", theme.text()),
+        ]),
+        Line::from(vec![
+            Span::styled("  ", theme.text_dim()),
+            Span::styled("Tab", theme.key_hint()),
+            Span::styled("     Switch focus", theme.text()),
+        ]),
+        Line::from(vec![
+            Span::styled("  ", theme.text_dim()),
+            Span::styled("/", theme.key_hint()),
+            Span::styled("       Search hosts", theme.text()),
+        ]),
+        Line::from(""),
+        Line::from(vec![Span::styled(
+            "󰌑 Views",
+            Style::default()
+                .add_modifier(Modifier::BOLD)
+                .fg(theme.fg_bright()),
+        )]),
+        Line::from(""),
+        Line::from(vec![
+            Span::styled("  ", theme.text_dim()),
+            Span::styled("f", theme.key_hint()),
+            Span::styled("     SFTP Browser", theme.text()),
+        ]),
+        Line::from(vec![
+            Span::styled("  ", theme.text_dim()),
+            Span::styled("t", theme.key_hint()),
+            Span::styled("     Tunnels", theme.text()),
+        ]),
+        Line::from(vec![
+            Span::styled("  ", theme.text_dim()),
+            Span::styled("s", theme.key_hint()),
+            Span::styled("     Settings", theme.text()),
+        ]),
+    ];
+
+    let help_area = Rect::new(area.x, area.y + 2, area.width, area.height - 2);
+    frame.render_widget(Paragraph::new(content), help_area);
 }

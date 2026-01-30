@@ -107,6 +107,14 @@ pub struct RenderState {
     pub can_go_back: bool,
     /// Can navigate forward
     pub can_go_forward: bool,
+    /// Detail view is focused
+    pub detail_view_focused: bool,
+    /// Selected item index in detail view
+    pub detail_view_item_index: usize,
+    /// Currently editing a detail field
+    pub editing_detail: bool,
+    /// Temporary buffer for editing
+    pub temp_edit_buffer: String,
 }
 
 /// Snapshot of a file pane for rendering
@@ -259,6 +267,14 @@ pub struct App {
     pub settings_dropdown_open: bool,
     /// Persistent terminal highlighter
     pub highlighter: Highlighter,
+    /// Detail view is focused
+    pub detail_view_focused: bool,
+    /// Selected item index in detail view
+    pub detail_view_item_index: usize,
+    /// Currently editing a detail field
+    pub editing_detail: bool,
+    /// Temporary buffer for editing
+    pub temp_edit_buffer: String,
 }
 
 impl App {
@@ -331,6 +347,10 @@ impl App {
             settings_item: 0,
             settings_dropdown_open: false,
             highlighter,
+            detail_view_focused: false,
+            detail_view_item_index: 0,
+            editing_detail: false,
+            temp_edit_buffer: String::new(),
         })
     }
 
@@ -522,6 +542,10 @@ impl App {
                 can_go_back: !self.view_back_history.is_empty(),
                 can_go_forward: !self.view_forward_history.is_empty(),
                 highlighter: self.highlighter.clone(),
+                detail_view_focused: self.detail_view_focused,
+                detail_view_item_index: self.detail_view_item_index,
+                editing_detail: self.editing_detail,
+                temp_edit_buffer: self.temp_edit_buffer.clone(),
             };
 
             // Render UI
@@ -982,9 +1006,28 @@ impl App {
             return self.handle_host_search_key(key).await;
         }
 
+        // Handle detail view input if focused
+        // Handle detail view input if focused
+        if self.detail_view_focused {
+            if self.handle_detail_view_key(key).await? {
+                return Ok(());
+            }
+            // If not handled, fall through to host list / global keys
+        }
+
         let host_count = self.all_hosts().len();
 
         match key.code {
+            KeyCode::Tab => {
+                // Switch focus to detail view
+                if host_count > 0 {
+                    self.detail_view_focused = true;
+                    // Reset if out of bounds (current fields = 6)
+                    if self.detail_view_item_index >= 6 {
+                         self.detail_view_item_index = 0;
+                    }
+                }
+            }
             KeyCode::Char('?') => self.view = View::Help,
             KeyCode::Char('s') => self.view = View::Settings,
             KeyCode::Char('K') => self.view = View::Keys, // Shift+K for Keys view
@@ -2667,9 +2710,10 @@ impl App {
 
     async fn handle_settings_key(&mut self, key: crossterm::event::KeyEvent) -> Result<()> {
         // Number of categories and items per category
-        const CATEGORIES: &[&str] = &["Appearance", "SSH", "Logging"];
-        // Items per category: [Appearance: theme, mouse, status_bar, scrollback, graph_style], [SSH: timeout, keepalive, reconnect], [Logging: enabled, format]
-        const ITEMS_PER_CATEGORY: &[usize] = &[5, 3, 2];
+        // Number of categories and items per category
+        const CATEGORIES: &[&str] = &["Appearance", "SSH", "Logging", "Keymap"];
+        // Items per category: [Appearance: theme, mouse, status_bar, scrollback, graph_style], [SSH: timeout, keepalive, reconnect], [Logging: enabled, format], [Keymap: none]
+        const ITEMS_PER_CATEGORY: &[usize] = &[5, 3, 2, 0];
 
         // If dropdown is open, handle dropdown navigation
         if self.settings_dropdown_open {
@@ -3221,6 +3265,168 @@ impl App {
                     session.is_selecting = false;
                 }
             }
+        }
+    }
+
+    /// Handle keyboard input for detail view
+    async fn handle_detail_view_key(&mut self, key: crossterm::event::KeyEvent) -> Result<bool> {
+        if self.editing_detail {
+            match key.code {
+                KeyCode::Esc => {
+                    self.editing_detail = false;
+                    self.temp_edit_buffer.clear();
+                }
+                KeyCode::Enter => {
+                    // Save changes
+                    self.save_detail_edit().await?;
+                    self.editing_detail = false;
+                    self.temp_edit_buffer.clear();
+                }
+                KeyCode::Backspace => {
+                    self.temp_edit_buffer.pop();
+                }
+                KeyCode::Char(c) => {
+                    self.temp_edit_buffer.push(c);
+                }
+                _ => {}
+            }
+            return Ok(true);
+        }
+
+        let mut handled = true;
+
+        match key.code {
+            KeyCode::Tab | KeyCode::BackTab => {
+                // Return focus to host list
+                self.detail_view_focused = false;
+                self.editing_detail = false;
+            }
+            KeyCode::Esc => {
+                 self.detail_view_focused = false;
+            }
+            KeyCode::Up | KeyCode::Char('k') => {
+                if self.detail_view_item_index > 0 {
+                    self.detail_view_item_index -= 1;
+                }
+            }
+            KeyCode::Down | KeyCode::Char('j') => {
+                // Max items: Name(0), Host(1), Port(2), User(3), Auth(4), Remember(5)
+                if self.detail_view_item_index < 5 {
+                    self.detail_view_item_index += 1;
+                }
+            }
+            KeyCode::Enter | KeyCode::Char(' ') => {
+                self.start_detail_edit().await?;
+            }
+             _ => {
+                 handled = false;
+             }
+        }
+        Ok(handled)
+    }
+
+    /// Start editing the selected detail field
+    async fn start_detail_edit(&mut self) -> Result<()> {
+        let mut initial_value = None;
+        let mut is_toggle = false;
+        
+        if let Some(host) = self.selected_host() {
+            match self.detail_view_item_index {
+                0 => initial_value = Some(host.name.clone()),
+                1 => initial_value = Some(host.hostname.clone()),
+                2 => initial_value = Some(host.port.to_string()),
+                3 => initial_value = Some(host.username.clone()),
+                4 => is_toggle = true,
+                5 => is_toggle = true,
+                _ => {}
+            }
+        }
+
+        if is_toggle {
+            match self.detail_view_item_index {
+                4 => self.toggle_auth_method().await?,
+                5 => self.toggle_remember_password().await?,
+                _ => {}
+            }
+        } else if let Some(val) = initial_value {
+            self.temp_edit_buffer = val;
+            self.editing_detail = true;
+        }
+        Ok(())
+    }
+
+    /// Toggle auth method (simplified for inline edit)
+    async fn toggle_auth_method(&mut self) -> Result<()> {
+        self.modify_selected_host(|host| {
+             use crate::config::AuthMethod;
+             match host.auth {
+                 AuthMethod::Password => host.auth = AuthMethod::KeyFile { path: std::path::PathBuf::from("~/.ssh/id_rsa"), passphrase_required: false },
+                 AuthMethod::KeyFile { .. } => host.auth = AuthMethod::Agent,
+                 AuthMethod::Agent => host.auth = AuthMethod::Password,
+                 _ => host.auth = AuthMethod::Password,
+             }
+        });
+        self.config.save().await?;
+        Ok(())
+    }
+
+    /// Toggle remember password
+    async fn toggle_remember_password(&mut self) -> Result<()> {
+        self.modify_selected_host(|host| {
+            host.remember_password = !host.remember_password;
+        });
+        self.config.save().await?;
+        Ok(())
+    }
+
+    /// Save the edited text value
+    async fn save_detail_edit(&mut self) -> Result<()> {
+        let val = self.temp_edit_buffer.clone();
+        let idx = self.detail_view_item_index;
+        
+        self.modify_selected_host(|host| {
+            match idx {
+                0 => host.name = val,
+                1 => host.hostname = val,
+                2 => {
+                    if let Ok(p) = val.parse::<u16>() {
+                        host.port = p;
+                    }
+                }
+                3 => host.username = val,
+                _ => {}
+            }
+        });
+        
+        self.config.save().await?;
+        Ok(())
+    }
+
+    /// Helper to modify the currently selected host
+    fn modify_selected_host<F>(&mut self, f: F) 
+    where F: FnOnce(&mut crate::config::HostConfig) 
+    {
+        let mut idx = 0;
+        let selected_idx = self.selected_host_index;
+
+        for group in &mut self.config.groups {
+            if group.expanded {
+                if selected_idx >= idx && selected_idx < idx + group.hosts.len() {
+                    let host_idx = selected_idx - idx;
+                    if let Some(host) = group.hosts.get_mut(host_idx) {
+                        f(host);
+                    }
+                    return;
+                }
+                idx += group.hosts.len();
+            }
+        }
+
+        let ungrouped_idx = selected_idx.saturating_sub(idx);
+        if ungrouped_idx < self.config.hosts.len() {
+             if let Some(host) = self.config.hosts.get_mut(ungrouped_idx) {
+                 f(host);
+             }
         }
     }
 }

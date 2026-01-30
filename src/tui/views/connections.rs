@@ -442,7 +442,11 @@ fn render_host_list_state(frame: &mut Frame, state: &RenderState, area: Rect) {
         .title(title)
         .title_alignment(Alignment::Left)
         .borders(Borders::ALL)
-        .border_style(theme.border_focus())
+        .border_style(if state.detail_view_focused {
+            theme.border_normal()
+        } else {
+            theme.border_focus()
+        })
         .padding(Padding::new(2, 2, 1, 1)) // left, right, top, bottom
         .style(Style::default().bg(theme.bg_panel()));
 
@@ -663,105 +667,112 @@ fn render_details_panel_state(frame: &mut Frame, state: &RenderState, area: Rect
     let theme = &state.theme;
     let icons = &state.icons;
 
-    let title = Line::from(vec![
+    let is_focused = state.detail_view_focused;
+    let border_style = if is_focused {
+        theme.border_focus()
+    } else {
+        theme.border_normal()
+    };
+
+    let title_spans = vec![
         Span::styled(format!(" {} ", icons.info), theme.title()),
         Span::styled("Details", theme.title()),
         Span::styled(" ", theme.title()),
-    ]);
+        if is_focused {
+             Span::styled(" [EDIT] ", theme.error())
+        } else {
+             Span::raw("")
+        } 
+    ];
+    let title = Line::from(title_spans);
 
     let block = Block::default()
         .title(title)
         .borders(Borders::ALL)
-        .border_style(theme.border_normal())
+        .border_style(border_style)
         .padding(Padding::uniform(1))
         .style(Style::default().bg(theme.bg_panel()));
 
     let inner = block.inner(area);
     frame.render_widget(block, area);
 
-    let content = vec![
-        Line::from(vec![Span::styled(
-            "󰋼 Quick Start",
-            Style::default()
-                .add_modifier(Modifier::BOLD)
-                .fg(theme.fg_bright()),
-        )]),
-        Line::from(""),
-        Line::from(vec![
-            Span::styled("  ", theme.text_dim()),
-            Span::styled("Enter", theme.key_hint()),
-            Span::styled(" Connect to host", theme.text()),
-        ]),
-        Line::from(vec![
-            Span::styled("  ", theme.text_dim()),
-            Span::styled("n", theme.key_hint()),
-            Span::styled("     New connection", theme.text()),
-        ]),
-        Line::from(vec![
-            Span::styled("  ", theme.text_dim()),
-            Span::styled("e", theme.key_hint()),
-            Span::styled("     Edit selected", theme.text()),
-        ]),
-        Line::from(vec![
-            Span::styled("  ", theme.text_dim()),
-            Span::styled("d", theme.key_hint()),
-            Span::styled("     Delete selected", theme.text()),
-        ]),
-        Line::from(""),
-        Line::from(vec![Span::styled(
-            "󰌌 Navigation",
-            Style::default()
-                .add_modifier(Modifier::BOLD)
-                .fg(theme.fg_bright()),
-        )]),
-        Line::from(""),
-        Line::from(vec![
-            Span::styled("  ", theme.text_dim()),
-            Span::styled("j/↓", theme.key_hint()),
-            Span::styled("   Move down", theme.text()),
-        ]),
-        Line::from(vec![
-            Span::styled("  ", theme.text_dim()),
-            Span::styled("k/↑", theme.key_hint()),
-            Span::styled("   Move up", theme.text()),
-        ]),
-        Line::from(vec![
-            Span::styled("  ", theme.text_dim()),
-            Span::styled("/", theme.key_hint()),
-            Span::styled("     Search hosts", theme.text()),
-        ]),
-        Line::from(""),
-        Line::from(vec![Span::styled(
-            "󰌑 Views",
-            Style::default()
-                .add_modifier(Modifier::BOLD)
-                .fg(theme.fg_bright()),
-        )]),
-        Line::from(""),
-        Line::from(vec![
-            Span::styled("  ", theme.text_dim()),
-            Span::styled("f", theme.key_hint()),
-            Span::styled("     SFTP Browser", theme.text()),
-        ]),
-        Line::from(vec![
-            Span::styled("  ", theme.text_dim()),
-            Span::styled("t", theme.key_hint()),
-            Span::styled("     Tunnels", theme.text()),
-        ]),
-        Line::from(vec![
-            Span::styled("  ", theme.text_dim()),
-            Span::styled("s", theme.key_hint()),
-            Span::styled("     Settings", theme.text()),
-        ]),
-        Line::from(vec![
-            Span::styled("  ", theme.text_dim()),
-            Span::styled("?", theme.key_hint()),
-            Span::styled("     Help", theme.text()),
-        ]),
-    ];
+    // Get selected host
+    let mut visible_hosts = Vec::new();
+    for group in &state.config.groups {
+        if group.expanded {
+            for host in &group.hosts {
+                visible_hosts.push(host);
+            }
+        }
+    }
+    for host in &state.config.hosts {
+        visible_hosts.push(host);
+    }
 
-    let paragraph = Paragraph::new(content);
-    frame.render_widget(paragraph, inner);
+    if let Some(host) = visible_hosts.get(state.selected_host_index) {
+        let auth_str = match &host.auth {
+            crate::config::AuthMethod::Password => "Password".to_string(),
+            crate::config::AuthMethod::KeyFile { .. } => "Key File".to_string(),
+            crate::config::AuthMethod::Agent => "Agent".to_string(),
+            crate::config::AuthMethod::Certificate { .. } => "Certificate".to_string(),
+        };
+
+        let items = vec![
+            ("Name", host.name.clone()),
+            ("Hostname", host.hostname.clone()),
+            ("Port", host.port.to_string()),
+            ("User", host.username.clone()),
+            ("Auth Method", auth_str),
+            ("Remember Pwd", if host.remember_password { "Yes".to_string() } else { "No".to_string() }),
+        ];
+
+        let mut y = inner.y;
+        for (i, (label, value)) in items.iter().enumerate() {
+            let is_selected = i == state.detail_view_item_index && is_focused;
+            let is_editing = is_selected && state.editing_detail;
+            
+            let display_value = if is_editing {
+                // Show cursor
+                format!("{}|", state.temp_edit_buffer)
+            } else {
+                value.to_string()
+            };
+
+            render_detail_field(frame, inner, y, label, &display_value, is_selected, theme);
+            y += 2;
+        }
+        
+    } else {
+         frame.render_widget(Paragraph::new("No host selected").style(Style::default().fg(theme.fg_dim())), inner);
+    }
+}
+
+fn render_detail_field(frame: &mut Frame, area: Rect, y: u16, label: &str, value: &str, is_selected: bool, theme: &crate::tui::Theme) {
+    if y >= area.y + area.height {
+        return;
+    }
+    
+    let row_area = Rect::new(area.x, y, area.width, 1);
+    
+    let label_style = if is_selected {
+        Style::default().fg(theme.accent_primary()).add_modifier(Modifier::BOLD)
+    } else {
+        Style::default().fg(theme.fg_dim())
+    };
+
+    let value_style = if is_selected {
+         Style::default().fg(theme.fg_bright()).bg(theme.bg_selected())
+    } else {
+         theme.text()
+    };
+
+    let layouts = Layout::default()
+        .direction(Direction::Horizontal)
+        .constraints([Constraint::Length(15), Constraint::Min(10)])
+        .split(row_area);
+
+    frame.render_widget(Paragraph::new(label).style(label_style), layouts[0]);
+    frame.render_widget(Paragraph::new(value).style(value_style), layouts[1]);
 }
 
 /// Render the connections view
