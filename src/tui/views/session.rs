@@ -220,21 +220,17 @@ fn render_terminal(frame: &mut Frame, app: &App, area: Rect) {
     // Get active session content with native ANSI colors
     if let Some(session_id) = app.active_session {
         if let Some(session) = app.sessions.get(session_id) {
-            use crate::tui::highlight::{highlight_styled_line, TerminalHighlightConfig};
             use crate::tui::terminal_render::render_screen_to_lines;
 
             // Render VT100 screen with full color support
             let screen = session.screen();
             let styled_lines = render_screen_to_lines(screen);
 
-            // Get highlight config (use default for now, can be made configurable)
-            let highlight_config = TerminalHighlightConfig::default();
-
             // Apply keyword highlighting on top of VT100 colors
             let lines: Vec<Line> = styled_lines
                 .into_iter()
                 .take(inner.height as usize)
-                .map(|line| highlight_styled_line(line, &highlight_config))
+                .map(|line| app.highlighter.highlight_styled_line(line))
                 .collect();
 
             let paragraph = Paragraph::new(lines);

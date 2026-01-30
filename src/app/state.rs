@@ -5,7 +5,7 @@ use crate::config::{Config, HostConfig};
 use crate::credentials::CredentialManager;
 use crate::sftp::{FileBrowser, SftpSession, SftpSessionManager, TransferQueue};
 use crate::ssh::{ConnectionPool, ProxyConnection, SessionManager, SshConnection};
-use crate::tui::highlight::{highlight_styled_line, TerminalHighlightConfig};
+use crate::tui::highlight::Highlighter;
 use crate::tui::terminal_render::render_screen_to_lines_with_selection;
 use crate::tui::{Icons, Theme, Tui};
 use anyhow::Result;
@@ -57,6 +57,7 @@ pub struct RenderState {
     pub theme: Theme,
     pub icons: Icons,
     pub config: Config,
+    pub highlighter: Highlighter,
     pub sessions: Vec<SessionInfo>,
     pub active_session: Option<Uuid>,
     pub status_message: Option<String>,
@@ -256,6 +257,8 @@ pub struct App {
     pub settings_item: usize,
     /// Settings view - dropdown is open
     pub settings_dropdown_open: bool,
+    /// Persistent terminal highlighter
+    pub highlighter: Highlighter,
 }
 
 impl App {
@@ -277,6 +280,9 @@ impl App {
 
         // Initialize clipboard (ignore error, will retry on use if needed)
         let clipboard = arboard::Clipboard::new().ok();
+
+        // Initialize highlighter
+        let highlighter = Highlighter::new(&config.settings.ui.terminal_highlight);
 
         Ok(Self {
             view: View::default(),
@@ -324,6 +330,7 @@ impl App {
             settings_category: 0,
             settings_item: 0,
             settings_dropdown_open: false,
+            highlighter,
         })
     }
 
@@ -386,15 +393,17 @@ impl App {
         self.tui.enter()?;
         self.events.start();
 
+        let mut should_redraw = true;
+
         while self.state != AppState::Quit {
-            // Create render state to avoid borrow conflict
-            let render_state = RenderState {
+            if should_redraw {
+                // Create render state to avoid borrow conflict
+                let render_state = RenderState {
                 view: self.view,
                 theme: self.theme.clone(),
                 icons: self.icons.clone(),
                 config: self.config.clone(),
                 sessions: {
-                    let highlight_config = TerminalHighlightConfig::default();
                     self.sessions
                         .list()
                         .iter()
@@ -406,7 +415,7 @@ impl App {
                                     render_screen_to_lines_with_selection(s.screen(), selection);
                                 raw_lines
                                     .into_iter()
-                                    .map(|line| highlight_styled_line(line, &highlight_config))
+                                    .map(|line| self.highlighter.highlight_styled_line(line))
                                     .collect()
                             } else {
                                 Vec::new()
@@ -512,6 +521,7 @@ impl App {
                 settings_dropdown_open: self.settings_dropdown_open,
                 can_go_back: !self.view_back_history.is_empty(),
                 can_go_forward: !self.view_forward_history.is_empty(),
+                highlighter: self.highlighter.clone(),
             };
 
             // Render UI
@@ -551,23 +561,25 @@ impl App {
             } else {
                 self.terminal_area = None;
             }
+                should_redraw = false;
+            }
 
-            // Handle events
+            // Handle events with batching
             if let Some(event) = self.events.next().await {
-                let is_mouse = matches!(event, AppEvent::Mouse(_));
-                self.handle_event(event).await?;
+                if self.handle_event(event).await? {
+                    should_redraw = true;
+                }
 
-                // Process pending events (batch processing)
-                // Only do this for mouse events to avoid input lag/conflicts with key operations (like paste)
-                if is_mouse {
-                    let mut events_processed = 0;
-                    while events_processed < 50 {
-                        if let Some(next_event) = self.events.try_next() {
-                            self.handle_event(next_event).await?;
-                            events_processed += 1;
-                        } else {
-                            break;
+                // Generic batch processing to reduce CPU/latency under load
+                let mut events_processed = 0;
+                while events_processed < 50 {
+                    if let Some(next_event) = self.events.try_next() {
+                        if self.handle_event(next_event).await? {
+                            should_redraw = true;
                         }
+                        events_processed += 1;
+                    } else {
+                        break;
                     }
                 }
             }
@@ -578,13 +590,14 @@ impl App {
     }
 
     /// Handle application events
-    async fn handle_event(&mut self, event: AppEvent) -> Result<()> {
+    /// Returns true if a redraw is needed
+    async fn handle_event(&mut self, event: AppEvent) -> Result<bool> {
         match event {
             AppEvent::Key(key) => {
                 // Prioritize escape prefix handling (allows holding Ctrl or standard usage)
                 if self.view == View::Session && self.escape_prefix_active {
                     self.handle_key(key).await?;
-                    return Ok(());
+                    return Ok(true);
                 }
 
                 // Handle Ctrl+Shift combinations (copy/paste in session)
@@ -617,12 +630,12 @@ impl App {
                     if is_copy {
                         // Copy selected text to clipboard
                         self.copy_selection_to_clipboard();
-                        return Ok(());
+                        return Ok(true);
                     }
                     if is_paste {
                         // Paste from clipboard
                         self.paste_from_clipboard().await;
-                        return Ok(());
+                        return Ok(true);
                     }
                 }
 
@@ -636,13 +649,13 @@ impl App {
                     self.find_query.clear();
                     self.find_matches.clear();
                     self.find_match_index = 0;
-                    return Ok(());
+                    return Ok(true);
                 }
 
                 // Handle find overlay input
                 if self.view == View::Session && self.find_overlay_visible {
                     self.handle_find_overlay_key(key).await?;
-                    return Ok(());
+                    return Ok(true);
                 }
 
                 // Handle Ctrl+C/Q - only quit from non-session views
@@ -653,11 +666,11 @@ impl App {
                     match key.code {
                         KeyCode::Left => {
                             self.navigate_back();
-                            return Ok(());
+                            return Ok(true);
                         }
                         KeyCode::Right => {
                             self.navigate_forward();
-                            return Ok(());
+                            return Ok(true);
                         }
                         _ => {}
                     }
@@ -703,6 +716,7 @@ impl App {
                 } else {
                     self.handle_key(key).await?;
                 }
+                Ok(true)
             }
             AppEvent::Resize(w, h) => {
                 // Handle terminal resize
@@ -714,9 +728,11 @@ impl App {
                         .resize_session(session_id, adjusted_cols, adjusted_rows)
                         .await?;
                 }
+                Ok(true)
             }
             AppEvent::SshData { session_id, data } => {
                 self.sessions.process_data(session_id, &data).await?;
+                Ok(true)
             }
             AppEvent::SshDisconnected { session_id, reason } => {
                 self.status_message = Some(format!("Disconnected: {}", reason));
@@ -735,14 +751,24 @@ impl App {
                         self.active_session = None;
                     }
                 }
+                Ok(true)
             }
             AppEvent::Error(msg) => {
                 self.status_message = Some(format!("Error: {}", msg));
+                Ok(true)
             }
             AppEvent::Mouse(mouse) => {
                 self.handle_mouse(mouse).await?;
+                Ok(true)
             }
             AppEvent::Tick => {
+                let mut needs_redraw = false;
+                
+                // Show spinner if connecting
+                if self.connecting_to_host.is_some() {
+                    needs_redraw = true;
+                }
+                
                 // Poll pending connection if any
                 if let Some(handle) = &mut self.pending_connection {
                     if handle.is_finished() {
@@ -776,11 +802,14 @@ impl App {
                                 self.status_message = Some(format!("Connection cancelled: {}", e));
                             }
                         }
+                        needs_redraw = true;
                     }
                 }
+                Ok(needs_redraw)
             }
             AppEvent::SftpProgress { .. } => {
                 // SFTP progress events handled elsewhere
+                Ok(true) // assume redraw needed for progress update
             }
             AppEvent::ConnectionResult {
                 host_id: _,
@@ -796,9 +825,9 @@ impl App {
                         self.status_message = Some(format!("Connection failed: {}", e));
                     }
                 }
+                Ok(true)
             }
         }
-        Ok(())
     }
 
     /// Handle key events based on current view

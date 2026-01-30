@@ -2,9 +2,11 @@
 //!
 //! Provides keyword-based syntax highlighting for terminal output
 
+use aho_corasick::AhoCorasick;
 use ratatui::prelude::*;
 use ratatui::text::{Line, Span};
 use serde::{Deserialize, Serialize};
+use std::sync::Arc;
 
 use super::Theme;
 
@@ -169,267 +171,269 @@ impl Default for TerminalHighlightConfig {
 }
 
 /// Keyword category for highlighting
-#[allow(dead_code)]
 #[derive(Debug, Clone, Copy, PartialEq)]
 enum KeywordCategory {
     Success,
     Error,
     Warning,
     Info,
-    None,
 }
 
-/// Highlight a single line of terminal output
-///
-/// Scans for keywords and returns a styled Line with colored spans
-pub fn highlight_line<'a>(
-    line: &'a str,
-    theme: &Theme,
-    config: &TerminalHighlightConfig,
-) -> Line<'a> {
-    if !config.enabled || line.is_empty() {
-        return Line::from(Span::styled(line, theme.text()));
-    }
+/// Efficient keyword highlighter using Aho-Corasick algorithm
+#[derive(Debug, Clone)]
+pub struct Highlighter {
+    /// Aho-Corasick automaton for efficient multi-pattern search
+    ac: Arc<AhoCorasick>,
+    /// Mapping of pattern ID to category
+    categories: Vec<KeywordCategory>,
+    /// Whether highlighting is enabled
+    enabled: bool,
+}
 
-    let mut spans: Vec<Span<'a>> = Vec::new();
-    let _remaining = line;
-    let mut last_end = 0;
+impl Highlighter {
+    /// Create a new highlighter from configuration
+    pub fn new(config: &TerminalHighlightConfig) -> Self {
+        let mut patterns = Vec::new();
+        let mut categories = Vec::new();
 
-    // Find all keyword matches
-    let mut matches: Vec<(usize, usize, KeywordCategory)> = Vec::new();
+        if config.enabled {
+            for kw in &config.success_keywords {
+                patterns.push(kw.clone());
+                categories.push(KeywordCategory::Success);
+            }
+            for kw in &config.error_keywords {
+                patterns.push(kw.clone());
+                categories.push(KeywordCategory::Error);
+            }
+            for kw in &config.warning_keywords {
+                patterns.push(kw.clone());
+                categories.push(KeywordCategory::Warning);
+            }
+            for kw in &config.info_keywords {
+                patterns.push(kw.clone());
+                categories.push(KeywordCategory::Info);
+            }
+        }
 
-    // Check each keyword category
-    for keyword in &config.success_keywords {
-        find_keyword_matches(line, keyword, KeywordCategory::Success, &mut matches);
-    }
-    for keyword in &config.error_keywords {
-        find_keyword_matches(line, keyword, KeywordCategory::Error, &mut matches);
-    }
-    for keyword in &config.warning_keywords {
-        find_keyword_matches(line, keyword, KeywordCategory::Warning, &mut matches);
-    }
-    for keyword in &config.info_keywords {
-        find_keyword_matches(line, keyword, KeywordCategory::Info, &mut matches);
-    }
+        // Build automaton with left-most longest match semantics
+        let ac = AhoCorasick::builder()
+            .match_kind(aho_corasick::MatchKind::LeftmostLongest)
+            .build(&patterns)
+            .unwrap_or_else(|_| AhoCorasick::new(&patterns).unwrap());
 
-    // Sort by position
-    matches.sort_by_key(|(start, _, _)| *start);
-
-    // Remove overlapping matches (keep first)
-    let mut filtered_matches: Vec<(usize, usize, KeywordCategory)> = Vec::new();
-    for m in matches {
-        if filtered_matches.is_empty() || m.0 >= filtered_matches.last().unwrap().1 {
-            filtered_matches.push(m);
+        Self {
+            ac: Arc::new(ac),
+            categories,
+            enabled: config.enabled,
         }
     }
 
-    // Build spans
-    for (start, end, category) in filtered_matches {
-        // Add text before this match
-        if start > last_end {
-            spans.push(Span::styled(&line[last_end..start], theme.text()));
+    /// Highlight a single line of terminal output
+    pub fn highlight_line<'a>(&self, line: &'a str, theme: &Theme) -> Line<'a> {
+        if !self.enabled || line.is_empty() {
+            return Line::from(Span::styled(line, theme.text()));
         }
 
-        // Add highlighted keyword
-        let style = match category {
-            KeywordCategory::Success => theme.success(),
-            KeywordCategory::Error => theme.error(),
-            KeywordCategory::Warning => theme.warning(),
-            KeywordCategory::Info => theme.info(),
-            KeywordCategory::None => theme.text(),
-        };
-        spans.push(Span::styled(&line[start..end], style));
-        last_end = end;
-    }
+        let mut spans = Vec::new();
+        let mut last_end = 0;
 
-    // Add remaining text
-    if last_end < line.len() {
-        spans.push(Span::styled(&line[last_end..], theme.text()));
-    }
-
-    if spans.is_empty() {
-        Line::from(Span::styled(line, theme.text()))
-    } else {
-        Line::from(spans)
-    }
-}
-
-/// Find all occurrences of a keyword in text with word boundary checking
-fn find_keyword_matches(
-    text: &str,
-    keyword: &str,
-    category: KeywordCategory,
-    matches: &mut Vec<(usize, usize, KeywordCategory)>,
-) {
-    let keyword_len = keyword.len();
-    let text_len = text.len();
-
-    let mut search_start = 0;
-    while search_start < text_len {
-        if let Some(pos) = text[search_start..].find(keyword) {
-            let abs_pos = search_start + pos;
-            let end_pos = abs_pos + keyword_len;
+        for mat in self.ac.find_iter(line) {
+            let start = mat.start();
+            let end = mat.end();
+            let pattern_id = mat.pattern();
 
             // Check word boundaries
-            let start_ok = abs_pos == 0
-                || !text
-                    .chars()
-                    .nth(abs_pos - 1)
-                    .map_or(false, |c| c.is_alphanumeric() || c == '_');
-            let end_ok = end_pos >= text_len
-                || !text
-                    .chars()
-                    .nth(end_pos)
-                    .map_or(false, |c| c.is_alphanumeric() || c == '_');
+            // Start boundary: either at start of line, or previous char is not alphanumeric/underscore
+            let start_ok = start == 0 || !is_word_char(line.as_bytes()[start - 1]);
+            // End boundary: either at end of line, or next char is not alphanumeric/underscore
+            let end_ok = end == line.len() || !is_word_char(line.as_bytes()[end]);
 
             if start_ok && end_ok {
-                matches.push((abs_pos, end_pos, category));
+                // Add text before this match
+                if start > last_end {
+                    spans.push(Span::styled(&line[last_end..start], theme.text()));
+                }
+
+                // Add highlighted keyword
+                let category = self.categories[pattern_id.as_usize()];
+                let style = match category {
+                    KeywordCategory::Success => theme.success(),
+                    KeywordCategory::Error => theme.error(),
+                    KeywordCategory::Warning => theme.warning(),
+                    KeywordCategory::Info => theme.info(),
+                };
+                spans.push(Span::styled(&line[start..end], style));
+                last_end = end;
+            }
+        }
+
+        // Add remaining text
+        if last_end < line.len() {
+            spans.push(Span::styled(&line[last_end..], theme.text()));
+        }
+
+        if spans.is_empty() {
+            Line::from(Span::styled(line, theme.text()))
+        } else {
+            Line::from(spans)
+        }
+    }
+
+    /// Highlight keywords in an already-styled Line while preserving existing ANSI/VT100 colors
+    pub fn highlight_styled_line(&self, line: Line<'static>) -> Line<'static> {
+        if !self.enabled {
+            return line;
+        }
+
+        // Extract full text content from line for keyword matching
+        let full_text: String = line.spans.iter().map(|s| s.content.as_ref()).collect();
+
+        if full_text.is_empty() {
+            return line;
+        }
+
+        // Find all matches first
+        let mut matches = Vec::new();
+        for mat in self.ac.find_iter(&full_text) {
+            let start = mat.start();
+            let end = mat.end();
+
+            // Check word boundaries
+            let start_ok = start == 0 || !is_word_char(full_text.as_bytes()[start - 1]);
+            let end_ok = end == full_text.len() || !is_word_char(full_text.as_bytes()[end]);
+
+            if start_ok && end_ok {
+                matches.push((start, end, self.categories[mat.pattern().as_usize()]));
+            }
+        }
+
+        if matches.is_empty() {
+            return line;
+        }
+
+        // Build new spans with keyword highlighting applied on top of existing styles
+        let mut new_spans = Vec::new();
+        let mut char_offset = 0;
+
+        for span in line.spans {
+            let span_text = span.content.to_string();
+            let span_len = span_text.len();
+            let span_start = char_offset;
+            let span_end = char_offset + span_len;
+
+            // Find matches that overlap with this span
+            let overlapping: Vec<_> = matches
+                .iter()
+                .filter(|(start, end, _)| *start < span_end && *end > span_start)
+                .cloned()
+                .collect();
+
+            if overlapping.is_empty() {
+                // No matches in this span, keep original style
+                new_spans.push(span);
+            } else {
+                // Split span based on keyword matches
+                let mut pos = 0;
+                for (match_start, match_end, category) in overlapping {
+                    // Convert to span-local offsets
+                    let local_start = match_start.saturating_sub(span_start);
+                    let local_end = (match_end - span_start).min(span_len);
+
+                    // Add text before match with original style
+                    if local_start > pos {
+                        new_spans.push(Span::styled(
+                            span_text[pos..local_start].to_string(),
+                            span.style,
+                        ));
+                    }
+
+                    // Add matched text with keyword color, preserving modifiers
+                    if local_start < span_len && local_end > local_start {
+                        let keyword_color = match category {
+                            KeywordCategory::Success => Color::Green,
+                            KeywordCategory::Error => Color::Red,
+                            KeywordCategory::Warning => Color::Yellow,
+                            KeywordCategory::Info => Color::Cyan,
+                        };
+
+                        // Apply keyword color but preserve other style attributes (bold, etc)
+                        let highlighted_style = span.style.fg(keyword_color);
+
+                        new_spans.push(Span::styled(
+                            span_text[local_start.max(pos)..local_end].to_string(),
+                            highlighted_style,
+                        ));
+                    }
+
+                    pos = local_end;
+                }
+
+                // Add remaining text with original style
+                if pos < span_len {
+                    new_spans.push(Span::styled(span_text[pos..].to_string(), span.style));
+                }
             }
 
-            search_start = end_pos;
-        } else {
-            break;
+            char_offset = span_end;
         }
+
+        Line::from(new_spans)
     }
 }
 
-/// Highlight keywords in an already-styled Line while preserving existing ANSI/VT100 colors
-///
-/// This function takes a Line that already has styling from VT100 parsing (shell prompts,
-/// directory colors, etc.) and applies keyword highlighting on top without destroying
-/// the existing styles.
-pub fn highlight_styled_line(
-    line: Line<'static>,
-    config: &TerminalHighlightConfig,
-) -> Line<'static> {
-    if !config.enabled {
-        return line;
+fn is_word_char(b: u8) -> bool {
+    b.is_ascii_alphanumeric() || b == b'_'
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use ratatui::style::Color;
+
+    #[test]
+    fn test_highlight_line() {
+        let config = TerminalHighlightConfig {
+            enabled: true,
+            success_keywords: vec!["ok".to_string()],
+            error_keywords: vec![],
+            warning_keywords: vec![],
+            info_keywords: vec![],
+        };
+        let highlighter = Highlighter::new(&config);
+        let theme = Theme::default();
+
+        let line = highlighter.highlight_line("status: ok", &theme);
+        assert!(line.spans.len() >= 2);
+        let last_span = line.spans.last().unwrap();
+        assert_eq!(last_span.content, "ok");
+        // Check success color (green by default in theme usually, or at least different from text)
+        // theme.success() returns a Style. Let's just check it matches.
+        assert_eq!(last_span.style, theme.success());
     }
 
-    // Extract full text content from line for keyword matching
-    let full_text: String = line.spans.iter().map(|s| s.content.as_ref()).collect();
+    #[test]
+    fn test_highlight_styled_line() {
+         let config = TerminalHighlightConfig {
+            enabled: true,
+            success_keywords: vec!["success".to_string()],
+            error_keywords: vec![],
+            warning_keywords: vec![],
+            info_keywords: vec![],
+        };
+        let highlighter = Highlighter::new(&config);
 
-    if full_text.is_empty() {
-        return line;
+        let input = Line::from(vec![
+            Span::styled("test success", Style::default().fg(Color::White)),
+        ]);
+        let output = highlighter.highlight_styled_line(input);
+        
+        let spans = output.spans;
+        // Start span
+        assert_eq!(spans[0].content, "test ");
+        assert_eq!(spans[0].style.fg, Some(Color::White));
+        
+        // Highlighted span
+        assert_eq!(spans[1].content, "success");
+        assert_eq!(spans[1].style.fg, Some(Color::Green));
     }
-
-    // Find all keyword matches in the full text
-    let mut keyword_matches: Vec<(usize, usize, KeywordCategory)> = Vec::new();
-
-    for keyword in &config.success_keywords {
-        find_keyword_matches(
-            &full_text,
-            keyword,
-            KeywordCategory::Success,
-            &mut keyword_matches,
-        );
-    }
-    for keyword in &config.error_keywords {
-        find_keyword_matches(
-            &full_text,
-            keyword,
-            KeywordCategory::Error,
-            &mut keyword_matches,
-        );
-    }
-    for keyword in &config.warning_keywords {
-        find_keyword_matches(
-            &full_text,
-            keyword,
-            KeywordCategory::Warning,
-            &mut keyword_matches,
-        );
-    }
-    for keyword in &config.info_keywords {
-        find_keyword_matches(
-            &full_text,
-            keyword,
-            KeywordCategory::Info,
-            &mut keyword_matches,
-        );
-    }
-
-    if keyword_matches.is_empty() {
-        return line;
-    }
-
-    // Sort matches by position
-    keyword_matches.sort_by_key(|(start, _, _)| *start);
-
-    // Remove overlapping matches
-    let mut filtered_matches: Vec<(usize, usize, KeywordCategory)> = Vec::new();
-    for m in keyword_matches {
-        if filtered_matches.is_empty() || m.0 >= filtered_matches.last().unwrap().1 {
-            filtered_matches.push(m);
-        }
-    }
-
-    // Build new spans with keyword highlighting applied on top of existing styles
-    let mut new_spans: Vec<Span<'static>> = Vec::new();
-    let mut char_offset: usize = 0;
-
-    for span in line.spans {
-        let span_text = span.content.to_string();
-        let span_len = span_text.len();
-        let span_start = char_offset;
-        let span_end = char_offset + span_len;
-
-        // Find matches that overlap with this span
-        let overlapping: Vec<_> = filtered_matches
-            .iter()
-            .filter(|(start, end, _)| *start < span_end && *end > span_start)
-            .cloned()
-            .collect();
-
-        if overlapping.is_empty() {
-            // No matches in this span, keep original style
-            new_spans.push(span);
-        } else {
-            // Split span based on keyword matches
-            let mut pos = 0;
-            for (match_start, match_end, category) in overlapping {
-                // Convert to span-local offsets
-                let local_start = match_start.saturating_sub(span_start);
-                let local_end = (match_end - span_start).min(span_len);
-
-                // Add text before match with original style
-                if local_start > pos {
-                    new_spans.push(Span::styled(
-                        span_text[pos..local_start].to_string(),
-                        span.style,
-                    ));
-                }
-
-                // Add matched text with keyword color, preserving modifiers
-                if local_start < span_len && local_end > local_start {
-                    let keyword_color = match category {
-                        KeywordCategory::Success => Color::Green,
-                        KeywordCategory::Error => Color::Red,
-                        KeywordCategory::Warning => Color::Yellow,
-                        KeywordCategory::Info => Color::Cyan,
-                        KeywordCategory::None => Color::Reset,
-                    };
-
-                    // Apply keyword color but preserve other style attributes (bold, etc)
-                    let highlighted_style = span.style.fg(keyword_color);
-
-                    new_spans.push(Span::styled(
-                        span_text[local_start.max(pos)..local_end].to_string(),
-                        highlighted_style,
-                    ));
-                }
-
-                pos = local_end;
-            }
-
-            // Add remaining text with original style
-            if pos < span_len {
-                new_spans.push(Span::styled(span_text[pos..].to_string(), span.style));
-            }
-        }
-
-        char_offset = span_end;
-    }
-
-    Line::from(new_spans)
 }

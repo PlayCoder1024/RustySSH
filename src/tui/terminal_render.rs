@@ -15,10 +15,9 @@ pub fn convert_color(color: vt100::Color) -> Option<Color> {
     }
 }
 
-/// Styled cell information from vt100
+/// Styled cell information from vt100 (style only)
 #[derive(Debug, Clone, PartialEq)]
-pub struct StyledCell {
-    pub content: String,
+pub struct CellStyle {
     pub fg: Option<Color>,
     pub bg: Option<Color>,
     pub bold: bool,
@@ -27,17 +26,28 @@ pub struct StyledCell {
     pub inverse: bool,
 }
 
-impl StyledCell {
+impl CellStyle {
     /// Create from vt100 cell
     pub fn from_vt100_cell(cell: &vt100::Cell) -> Self {
         Self {
-            content: cell.contents().to_string(),
             fg: convert_color(cell.fgcolor()),
             bg: convert_color(cell.bgcolor()),
             bold: cell.bold(),
             italic: cell.italic(),
             underline: cell.underline(),
             inverse: cell.inverse(),
+        }
+    }
+
+    /// Default style for empty cells
+    pub fn default_style() -> Self {
+        Self {
+            fg: None,
+            bg: None,
+            bold: false,
+            italic: false,
+            underline: false,
+            inverse: false,
         }
     }
 
@@ -82,16 +92,6 @@ impl StyledCell {
 
         style
     }
-
-    /// Check if two cells have the same style (for merging)
-    pub fn same_style(&self, other: &Self) -> bool {
-        self.fg == other.fg
-            && self.bg == other.bg
-            && self.bold == other.bold
-            && self.italic == other.italic
-            && self.underline == other.underline
-            && self.inverse == other.inverse
-    }
 }
 
 /// Render a vt100 screen to styled ratatui Lines
@@ -115,12 +115,13 @@ fn render_screen_to_lines_impl(
     let (rows, cols) = screen.size();
 
     // Unwrap selection for faster access in loop
+    // (start_row, start_col, end_row, end_col)
     let selection_unwrapped = selection.map(|((sr, sc), (er, ec))| (sr, sc, er, ec));
 
     for row in 0..rows {
         let mut spans: Vec<Span<'static>> = Vec::new();
-        let mut current_text = String::new();
-        let mut current_style: Option<StyledCell> = None;
+        let mut current_text = String::with_capacity(cols as usize);
+        let mut current_style: Option<CellStyle> = None;
 
         for col in 0..cols {
             // Check selection state
@@ -146,67 +147,35 @@ fn render_screen_to_lines_impl(
                 false
             };
 
-            if let Some(cell) = screen.cell(row, col) {
-                let mut styled_cell = StyledCell::from_vt100_cell(cell);
-
-                // Apply selection highlighting by inverting colors
-                if is_selected {
-                    styled_cell.inverse = !styled_cell.inverse;
-                }
-
-                // Get content (handle empty cells)
-                let content = if styled_cell.content.is_empty() {
-                    " ".to_string()
-                } else {
-                    styled_cell.content.clone()
-                };
-
-                match &current_style {
-                    Some(prev) if prev.same_style(&styled_cell) => {
-                        // Same style, append to current text
-                        current_text.push_str(&content);
-                    }
-                    _ => {
-                        // Different style, flush previous and start new
-                        if !current_text.is_empty() {
-                            if let Some(prev) = &current_style {
-                                spans.push(Span::styled(current_text.clone(), prev.to_style()));
-                            }
-                        }
-                        current_text = content;
-                        current_style = Some(styled_cell);
-                    }
-                }
+            let (content_str, mut style) = if let Some(cell) = screen.cell(row, col) {
+                let s = CellStyle::from_vt100_cell(cell);
+                let c = cell.contents();
+                let content = if c.is_empty() { " " } else { c };
+                (content, s)
             } else {
-                // No cell, add space
-                // Create a default style for empty space, potentially selected
-                let mut empty_style = StyledCell {
-                    content: " ".to_string(),
-                    fg: None,
-                    bg: None,
-                    bold: false,
-                    italic: false,
-                    underline: false,
-                    inverse: false,
-                };
+                (" ", CellStyle::default_style())
+            };
 
-                if is_selected {
-                    empty_style.inverse = true;
+            // Apply selection highlighting by inverting colors
+            if is_selected {
+                style.inverse = !style.inverse;
+            }
+
+            match &current_style {
+                Some(prev) if *prev == style => {
+                    // Same style, append to current text
+                    current_text.push_str(content_str);
                 }
-
-                if let Some(prev) = &current_style {
-                    if prev.same_style(&empty_style) {
-                        current_text.push(' ');
-                    } else {
-                        if !current_text.is_empty() {
+                _ => {
+                    // Different style, flush previous and start new
+                    if !current_text.is_empty() {
+                        if let Some(prev) = &current_style {
                             spans.push(Span::styled(current_text.clone(), prev.to_style()));
                         }
-                        current_text = " ".to_string();
-                        current_style = Some(empty_style);
                     }
-                } else {
-                    current_text.push(' ');
-                    current_style = Some(empty_style);
+                    current_text.clear();
+                    current_text.push_str(content_str);
+                    current_style = Some(style);
                 }
             }
         }
@@ -249,4 +218,62 @@ fn render_screen_to_lines_impl(
     }
 
     lines
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use ratatui::style::{Color, Style};
+
+    #[test]
+    fn test_render_simple_text() {
+        let mut parser = vt100::Parser::new(24, 80, 0);
+        parser.process(b"Hello world");
+        let screen = parser.screen();
+        let lines = render_screen_to_lines(screen);
+        
+        let first_line = &lines[0];
+        assert_eq!(first_line.spans.len(), 1);
+        assert_eq!(first_line.spans[0].content, "Hello world");
+    }
+
+    #[test]
+    fn test_render_colored_text() {
+        let mut parser = vt100::Parser::new(24, 80, 0);
+        // \x1b[31mRed\x1b[0m \x1b[32mGreen\x1b[0m
+        parser.process(b"\x1b[31mRed\x1b[0m \x1b[32mGreen\x1b[0m");
+        let screen = parser.screen();
+        let lines = render_screen_to_lines(screen);
+        
+        let first_line = &lines[0];
+        // "Red" (red), " " (default), "Green" (green)
+        assert_eq!(first_line.spans.len(), 3);
+        assert_eq!(first_line.spans[0].content, "Red");
+        // vt100 returns Indexed(1) for Red
+        assert_eq!(first_line.spans[0].style.fg, Some(Color::Indexed(1)));
+        
+        assert_eq!(first_line.spans[1].content, " ");
+        assert_eq!(first_line.spans[1].style, Style::default());
+        
+        assert_eq!(first_line.spans[2].content, "Green");
+        // vt100 returns Indexed(2) for Green
+        assert_eq!(first_line.spans[2].style.fg, Some(Color::Indexed(2)));
+    }
+
+    #[test]
+    fn test_cell_style() {
+        let mut parser = vt100::Parser::new(24, 80, 0);
+        parser.process(b"\x1b[1;31mBold Red"); // Bold + Red
+        let screen = parser.screen();
+        let cell = screen.cell(0, 0).unwrap();
+        let style = CellStyle::from_vt100_cell(cell);
+        
+        assert_eq!(style.fg, Some(Color::Indexed(1)));
+        assert!(style.bold);
+        
+        let ratatui_style = style.to_style();
+        assert_eq!(ratatui_style.fg, Some(Color::Indexed(1)));
+        // Note: ratatui's Modifier is a bitflag.
+        assert!(ratatui_style.add_modifier.contains(ratatui::style::Modifier::BOLD));
+    }
 }
