@@ -396,7 +396,7 @@ pub fn run_transfer_worker(
                     let mut remote_file = sftp.create(&item.destination)?;
                     
                     let mut buffer = [0u8; 32768]; // 32KB buffer
-                    let mut file_size = local_file.metadata()?.len();
+                    let _file_size = local_file.metadata()?.len();
                     
                     loop {
                         let n = local_file.read(&mut buffer)?;

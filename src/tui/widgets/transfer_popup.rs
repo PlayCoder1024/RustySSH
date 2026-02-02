@@ -1,7 +1,7 @@
 use crate::app::TransferQueueSnapshot;
 use crate::tui::theme::Theme;
 use ratatui::prelude::*;
-use ratatui::widgets::{Block, Borders, Clear, Gauge, ListItem, List, Padding};
+use ratatui::widgets::{Block, Borders, Clear, Gauge};
 
 /// Widget to display active file transfers
 pub struct TransferPopup<'a> {

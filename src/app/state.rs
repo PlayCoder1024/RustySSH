@@ -483,7 +483,7 @@ impl App {
         
         // Send item to worker
         if let Some(tx) = self.transfer_workers.get(&host_id) {
-            if let Err(e) = tx.send(item.clone()) {
+            if let Err(_e) = tx.send(item.clone()) {
                 // Worker died?
                 self.transfer_workers.remove(&host_id);
                 // Retry? Or fail? Fail for now.
@@ -2659,7 +2659,7 @@ impl App {
             crate::sftp::TransferDirection::Download
         };
 
-        let file_count = source_files.len();
+        let _file_count = source_files.len();
         let mut added_count = 0;
 
         for (source, size) in source_files {
