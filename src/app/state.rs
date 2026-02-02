@@ -3534,7 +3534,7 @@ impl App {
         self.modify_selected_host(|host| {
              use crate::config::AuthMethod;
              match host.auth {
-                 AuthMethod::Password => host.auth = AuthMethod::KeyFile { path: std::path::PathBuf::from("~/.ssh/id_rsa"), passphrase_required: false },
+                 AuthMethod::Password => host.auth = AuthMethod::KeyFile { path: std::path::PathBuf::from("id_rsa"), passphrase_required: false },
                  AuthMethod::KeyFile { .. } => host.auth = AuthMethod::Agent,
                  AuthMethod::Agent => host.auth = AuthMethod::Password,
                  _ => host.auth = AuthMethod::Password,

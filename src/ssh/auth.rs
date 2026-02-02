@@ -1,6 +1,7 @@
 //! SSH authentication handling
 
 use crate::config::{AuthMethod, HostConfig};
+use crate::utils::resolve_ssh_key_path;
 use anyhow::{anyhow, Result};
 use ssh2::Session;
 use std::path::Path;
@@ -27,20 +28,36 @@ impl Authenticator {
                 path,
                 passphrase_required,
             } => {
+                let resolved_path = resolve_ssh_key_path(path);
+                if !resolved_path.exists() {
+                    return Err(anyhow!(
+                        "SSH key not found: {} (resolved to {})",
+                        path.display(),
+                        resolved_path.display()
+                    ));
+                }
                 let passphrase = if *passphrase_required {
                     passphrase
                 } else {
                     None
                 };
-                Self::auth_with_key(session, &host.username, path, passphrase)
+                Self::auth_with_key(session, &host.username, &resolved_path, passphrase)
             }
             AuthMethod::Agent => Self::auth_with_agent(session, &host.username),
             AuthMethod::Certificate {
                 cert_path: _,
                 key_path,
             } => {
+                let resolved_path = resolve_ssh_key_path(key_path);
+                if !resolved_path.exists() {
+                    return Err(anyhow!(
+                        "SSH key not found: {} (resolved to {})",
+                        key_path.display(),
+                        resolved_path.display()
+                    ));
+                }
                 // For now, treat as key file auth
-                Self::auth_with_key(session, &host.username, key_path, passphrase)
+                Self::auth_with_key(session, &host.username, &resolved_path, passphrase)
             }
         }
     }
