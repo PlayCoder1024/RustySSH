@@ -23,20 +23,110 @@ pub fn render_state(frame: &mut Frame, state: &RenderState, area: Rect) {
     let inner = block.inner(area);
     frame.render_widget(block, area);
 
-    let empty_text = vec![
-        Line::from(""),
-        Line::from(vec![Span::styled(
-            "  No SSH keys found in ~/.ssh/",
-            theme.text_dim(),
-        )]),
-        Line::from(""),
-        Line::from(vec![
-            Span::styled("  Press ", theme.text_dim()),
+    if state.ssh_keys.is_empty() {
+        let empty_text = vec![
+            Line::from(""),
+            Line::from(vec![Span::styled(
+                "  No SSH keys found in ~/.ssh/",
+                theme.text_dim(),
+            )]),
+            Line::from(""),
+            Line::from(vec![
+                Span::styled("  Press ", theme.text_dim()),
+                Span::styled("n", theme.key_hint()),
+                Span::styled(" to generate a new key", theme.text_dim()),
+            ]),
+        ];
+        frame.render_widget(Paragraph::new(empty_text), inner);
+    } else {
+        // Key table header
+        let header = Row::new(vec![
+            Cell::from("Type").style(theme.text_dim()),
+            Cell::from("Name").style(theme.text_dim()),
+            Cell::from("Fingerprint").style(theme.text_dim()),
+            Cell::from("Comment").style(theme.text_dim()),
+            Cell::from("Encrypted").style(theme.text_dim()),
+        ]);
+
+        let rows: Vec<Row> = state.ssh_keys.iter().enumerate().map(|(i, key)| {
+            let is_selected = i == state.settings_item; // Reusing settings_item for selection index if in settings view
+            // Note: This relies on settings_item being the index. If we are in View::Keys, we need a different index in RenderState?
+            // The plan is to put this in Settings. In Settings, settings_item tracks the selected item in the list.
+            // If we are just listing keys, we might need a separate 'selected_key_index'. 
+            // BUT, for now let's assume valid mapping or just not highlight if not applicable.
+            // Actually, in Settings view, `settings_item` tracks the index within the category. 
+            // If we are in the "Keys" category, `settings_item` will be the key index.
+            
+            create_key_row_snapshot(key, theme, is_selected)
+        }).collect();
+
+        let widths = [
+            Constraint::Length(10), // Type
+            Constraint::Length(15), // Name
+            Constraint::Length(45), // Fingerprint
+            Constraint::Min(15),    // Comment
+            Constraint::Length(10), // Encrypted
+        ];
+
+        let table = Table::new(rows, widths)
+            .header(header)
+            .highlight_style(theme.selected());
+
+        // Split for help text at bottom
+        let chunks = Layout::default()
+            .direction(Direction::Vertical)
+            .constraints([Constraint::Min(5), Constraint::Length(3)])
+            .split(inner);
+
+        frame.render_widget(table, chunks[0]);
+
+        // Help text
+        let help = Line::from(vec![
             Span::styled("n", theme.key_hint()),
-            Span::styled(" to generate a new key", theme.text_dim()),
-        ]),
-    ];
-    frame.render_widget(Paragraph::new(empty_text), inner);
+            Span::styled(":Generate  ", theme.text_dim()),
+            Span::styled("d", theme.key_hint()),
+            Span::styled(":Delete  ", theme.text_dim()),
+             Span::styled("r", theme.key_hint()),
+            Span::styled(":Refresh", theme.text_dim()),
+        ]);
+        frame.render_widget(Paragraph::new(help), chunks[1]);
+    }
+}
+
+use crate::app::KeyInfoSnapshot;
+
+fn create_key_row_snapshot<'a>(
+    key: &'a KeyInfoSnapshot,
+    theme: &crate::tui::Theme,
+    is_selected: bool,
+) -> Row<'a> {
+    let base_style = if is_selected {
+        theme.selected()
+    } else {
+        theme.text()
+    };
+
+    let type_style = Style::default().fg(match key.key_type.as_str() {
+        "ed25519" => theme.accent_success(),
+        "rsa" => theme.accent_primary(),
+        "ecdsa" => theme.accent_info(),
+        _ => theme.fg_dim(),
+    });
+
+    let encrypted_text = if key.encrypted { "🔒 Yes" } else { "🔓 No" };
+    let encrypted_style = Style::default().fg(if key.encrypted {
+        theme.accent_warning()
+    } else {
+        theme.fg_dim()
+    });
+
+    Row::new(vec![
+        Cell::from(key.key_type.clone()).style(type_style),
+        Cell::from(key.name.clone()).style(base_style),
+        Cell::from(key.fingerprint.clone()).style(theme.text_dim()),
+        Cell::from(key.comment.clone()).style(theme.text()),
+        Cell::from(encrypted_text).style(encrypted_style),
+    ])
 }
 
 /// Render the keys view

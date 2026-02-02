@@ -115,6 +115,8 @@ pub struct RenderState {
     pub editing_detail: bool,
     /// Temporary buffer for editing
     pub temp_edit_buffer: String,
+    /// SSH keys list
+    pub ssh_keys: Vec<KeyInfoSnapshot>,
 }
 
 /// Snapshot of a file pane for rendering
@@ -159,6 +161,17 @@ pub struct TransferItemSnapshot {
     pub speed_display: String,
     pub eta_display: String,
     pub is_upload: bool,
+}
+
+/// Snapshot of SSH key info for rendering
+#[derive(Clone)]
+pub struct KeyInfoSnapshot {
+    pub name: String,
+    pub key_type: String,
+    pub fingerprint: String,
+    pub comment: String,
+    pub encrypted: bool,
+    pub path: String,
 }
 
 /// Active SSH channel for a session
@@ -277,6 +290,10 @@ pub struct App {
     pub editing_detail: bool,
     /// Temporary buffer for editing
     pub temp_edit_buffer: String,
+    /// SSH Key Manager
+    pub key_manager: crate::ssh::KeyManager,
+    /// Last time keys were scanned
+    pub ssh_keys_last_scan: std::time::Instant,
 }
 
 impl App {
@@ -369,7 +386,15 @@ impl App {
             detail_view_item_index: 0,
             editing_detail: false,
             temp_edit_buffer: String::new(),
+            key_manager: crate::ssh::KeyManager::new(),
+            ssh_keys_last_scan: std::time::Instant::now(),
         })
+    }
+
+    /// Refresh SSH keys list
+    pub fn refresh_keys(&mut self) -> Result<()> {
+        let _ = self.key_manager.scan_keys();
+        Ok(())
     }
 
     /// Get all hosts (groups + ungrouped)
@@ -500,6 +525,12 @@ impl App {
         let mut should_redraw = true;
 
         while self.state != AppState::Quit {
+            // Initial scan of keys
+            if self.ssh_keys_last_scan.elapsed() > Duration::from_secs(60) || self.key_manager.list_keys().is_empty() {
+                 let _ = self.key_manager.scan_keys();
+                 self.ssh_keys_last_scan = std::time::Instant::now();
+            }
+
             if should_redraw {
                 // Create render state to avoid borrow conflict
                 let render_state = RenderState {
@@ -630,6 +661,14 @@ impl App {
                 detail_view_item_index: self.detail_view_item_index,
                 editing_detail: self.editing_detail,
                 temp_edit_buffer: self.temp_edit_buffer.clone(),
+                ssh_keys: self.key_manager.list_keys().iter().map(|k| KeyInfoSnapshot {
+                    name: k.path.file_name().unwrap_or_default().to_string_lossy().to_string(),
+                    key_type: k.key_type.clone(),
+                    fingerprint: k.fingerprint.clone(),
+                    comment: k.comment.clone(),
+                    encrypted: k.encrypted,
+                    path: k.path.to_string_lossy().to_string(),
+                }).collect(),
             };
 
             // Render UI
@@ -1143,7 +1182,11 @@ impl App {
             }
             KeyCode::Char('?') => self.view = View::Help,
             KeyCode::Char('s') => self.view = View::Settings,
-            KeyCode::Char('K') => self.view = View::Keys, // Shift+K for Keys view
+            KeyCode::Char('K') => {
+                self.view = View::Settings;
+                self.settings_category = 2; // Keys
+                self.settings_item = 0;
+            }
             KeyCode::Char('t') => self.view = View::Tunnels,
             KeyCode::Char('/') => {
                 // Open host search overlay
@@ -2767,9 +2810,9 @@ impl App {
         // Number of categories and items per category
         // Number of categories and items per category
         // Number of categories and items per category
-        const CATEGORIES: &[&str] = &["Appearance", "SSH", "Logging", "Keymap", "About"];
-        // Items per category: [Appearance, SSH, Logging, Keymap, About]
-        const ITEMS_PER_CATEGORY: &[usize] = &[5, 3, 2, 0, 0];
+        const CATEGORIES: &[&str] = &["Appearance", "SSH", "Keys", "Logging", "Keymap", "About"];
+        // Items per category: [Appearance, SSH, Keys(dynamic), Logging, Keymap, About]
+        let items_per_category: Vec<usize> = vec![5, 3, self.key_manager.list_keys().len().max(1), 2, 0, 0];
 
         // If dropdown is open, handle dropdown navigation
         if self.settings_dropdown_open {
@@ -2819,7 +2862,7 @@ impl App {
 
             // Item navigation (Up/Down)
             KeyCode::Up | KeyCode::Char('k') => {
-                let max_items = ITEMS_PER_CATEGORY[self.settings_category];
+                let max_items = items_per_category[self.settings_category];
                 if max_items > 0 {
                     if self.settings_item == 0 {
                         self.settings_item = max_items - 1;
@@ -2829,7 +2872,7 @@ impl App {
                 }
             }
             KeyCode::Down | KeyCode::Char('j') => {
-                let max_items = ITEMS_PER_CATEGORY[self.settings_category];
+                let max_items = items_per_category[self.settings_category];
                 if max_items > 0 {
                     self.settings_item = (self.settings_item + 1) % max_items;
                 }
@@ -2932,7 +2975,78 @@ impl App {
                             _ => {}
                         }
                     }
+                    3 => {
+                        // Logging
+                        match self.settings_item {
+                            0 => {
+                                // Logging enabled - toggle
+                                self.config.settings.logging.enabled =
+                                    !self.config.settings.logging.enabled;
+                                self.config.save().await?;
+                            }
+                            1 => {
+                                // Log format - open dropdown
+                                self.settings_dropdown_open = true;
+                            }
+                            _ => {}
+                        }
+                    }
                     _ => {}
+                }
+            }
+            KeyCode::Char('n') => {
+                if self.settings_category == 2 {
+                     // Generate new key
+                     // For now, auto-generate ED25519
+                     let mut path = self.key_manager.ssh_dir().to_path_buf();
+                     let name = format!("id_ed25519_{}", chrono::Utc::now().timestamp());
+                     path.push(&name);
+                     
+                     match self.key_manager.generate_ed25519(&path, &format!("{}@rustyssh", whoami::username()), None) {
+                         Ok(_) => {
+                             self.status_message = Some(format!("Generated {}", name));
+                             let _ = self.refresh_keys();
+                         }
+                         Err(e) => {
+                             self.status_message = Some(format!("Error: {}", e));
+                         }
+                     }
+                }
+            }
+            KeyCode::Char('d') => {
+                if self.settings_category == 2 {
+                     // Delete selected key
+                     // Clone needed data to avoid immutable borrow during deletion
+                     let key_data = {
+                         let keys = self.key_manager.list_keys();
+                         if !keys.is_empty() && self.settings_item < keys.len() {
+                             let key = keys[self.settings_item];
+                             Some((key.path.clone(), key.path.file_name().unwrap_or_default().to_string_lossy().to_string()))
+                         } else {
+                             None
+                         }
+                     };
+
+                     if let Some((path, name)) = key_data {
+                         match self.key_manager.delete_key(&path) {
+                              Ok(_) => {
+                                 self.status_message = Some(format!("Deleted {}", name));
+                                 let _ = self.refresh_keys();
+                                 if self.settings_item > 0 {
+                                     self.settings_item -= 1;
+                                 }
+                             }
+                             Err(e) => {
+                                 self.status_message = Some(format!("Error: {}", e));
+                             }
+                         }
+                     }
+                }
+            }
+            KeyCode::Char('r') => {
+                if self.settings_category == 2 {
+                     let _ = self.refresh_keys();
+                     self.status_message = Some("Refreshed".to_string());
                 }
             }
             _ => {}
@@ -2969,7 +3083,7 @@ impl App {
                 }
                 _ => {}
             },
-            2 => match self.settings_item {
+            3 => match self.settings_item {
                 1 => {
                     // Log format
                     let current = LOG_FORMATS
@@ -3023,7 +3137,7 @@ impl App {
                 }
                 _ => {}
             },
-            2 => match self.settings_item {
+            3 => match self.settings_item {
                 1 => {
                     // Log format
                     let current = LOG_FORMATS

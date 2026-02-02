@@ -5,9 +5,11 @@ use ratatui::prelude::*;
 use ratatui::widgets::{Block, Borders, Clear, Padding, Paragraph};
 
 /// Categories and their items
+
 const CATEGORIES: &[(&str, &str)] = &[
     ("󰔎 ", "Appearance"),
     ("󰣀 ", "SSH"),
+    ("󰌋 ", "Keys"),
     ("󰈙 ", "Logging"),
     ("󰌑 ", "Keymap"),
     ("󰋜 ", "About"),
@@ -125,9 +127,10 @@ fn render_content(frame: &mut Frame, state: &RenderState, area: Rect) {
     match state.settings_category {
         0 => render_appearance_settings(frame, state, content_area),
         1 => render_ssh_settings(frame, state, content_area),
-        2 => render_logging_settings(frame, state, content_area),
-        3 => render_keymap_settings(frame, state, content_area),
-        4 => render_about_settings(frame, state, content_area),
+        2 => crate::tui::views::keys::render_state(frame, state, content_area),
+        3 => render_logging_settings(frame, state, content_area),
+        4 => render_keymap_settings(frame, state, content_area),
+        5 => render_about_settings(frame, state, content_area),
         _ => {}
     }
 }
@@ -505,7 +508,7 @@ fn render_dropdown(frame: &mut Frame, state: &RenderState, content_area: Rect) {
             ),
             _ => return,
         },
-        2 => match state.settings_item {
+        3 => match state.settings_item {
             1 => (
                 "Log Format",
                 vec!["timestamped", "raw"],
