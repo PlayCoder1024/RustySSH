@@ -3226,73 +3226,120 @@ impl App {
 
     /// Copy selected text to clipboard
     fn copy_selection_to_clipboard(&mut self) {
-        if let Some(session_id) = self.active_session {
-            if let Some(session) = self.sessions.get_mut(session_id) {
-                if let Some(text) = session.get_selected_text() {
-                    // On Linux X11/Wayland, always create a fresh clipboard instance
-                    // to avoid stale X11 connection state that can cause set_text to silently fail.
-                    // The old clipboard instance might have a stale selection owner state.
-                    match arboard::Clipboard::new() {
-                        Ok(mut clipboard) => {
-                            // Use cfg to handle Linux-specific clipboard behavior
-                            #[cfg(target_os = "linux")]
-                            {
-                                use arboard::{LinuxClipboardKind, SetExtLinux};
+        // First, get the selected text without holding a mutable borrow
+        let text = if let Some(session_id) = self.active_session {
+            if let Some(session) = self.sessions.get(session_id) {
+                session.get_selected_text()
+            } else {
+                None
+            }
+        } else {
+            None
+        };
 
-                                // Set to both Clipboard (Ctrl+V) and Primary (middle-click) selections
-                                // This matches the behavior users expect on Linux
-                                let clipboard_result = clipboard
-                                    .set()
-                                    .clipboard(LinuxClipboardKind::Clipboard)
-                                    .text(text.clone());
-
-                                if let Err(e) = clipboard_result {
-                                    self.status_message = Some(format!("Copy failed: {}", e));
-                                    return;
-                                }
-
-                                // Also set primary selection for middle-click paste
-                                // Create another clipboard instance for primary (they can't share)
-                                if let Ok(mut primary_clipboard) = arboard::Clipboard::new() {
-                                    let _ = primary_clipboard
-                                        .set()
-                                        .clipboard(LinuxClipboardKind::Primary)
-                                        .text(text.clone());
-                                    // Don't need to keep primary clipboard alive - primary selection
-                                    // is typically more transient anyway
-                                }
-
-                                self.status_message = Some(format!("Copied {} chars", text.len()));
-                                session.clear_selection();
-                                // CRITICAL: Persist this clipboard instance to keep the background thread alive
-                                // and maintain ownership of the selection on Linux/X11
-                                self.clipboard = Some(clipboard);
-                            }
-
-                            #[cfg(not(target_os = "linux"))]
-                            {
-                                match clipboard.set_text(&text) {
-                                    Ok(_) => {
-                                        self.status_message =
-                                            Some(format!("Copied {} chars", text.len()));
-                                        session.clear_selection();
-                                        self.clipboard = Some(clipboard);
-                                    }
-                                    Err(e) => {
-                                        self.status_message = Some(format!("Copy failed: {}", e));
-                                    }
-                                }
-                            }
-                        }
-                        Err(e) => {
-                            self.status_message = Some(format!("Clipboard init error: {}", e));
-                        }
+        if let Some(text) = text {
+            // Try multiple clipboard methods for reliability
+            let success = self.set_clipboard_text(&text);
+            if success {
+                self.status_message = Some(format!("Copied {} chars", text.len()));
+                // Now clear selection
+                if let Some(session_id) = self.active_session {
+                    if let Some(session) = self.sessions.get_mut(session_id) {
+                        session.clear_selection();
                     }
-                } else {
-                    self.status_message = Some("No text selected".to_string());
+                }
+            }
+        } else {
+            self.status_message = Some("No text selected".to_string());
+        }
+    }
+
+    /// Set clipboard text using multiple methods for reliability
+    fn set_clipboard_text(&mut self, text: &str) -> bool {
+        // On Linux, try xclip/xsel first as they're more reliable
+        #[cfg(target_os = "linux")]
+        {
+            // Try xclip first (most common)
+            if Self::set_clipboard_via_command("xclip", &["-selection", "clipboard"], text) {
+                // Also set primary selection for middle-click paste
+                let _ = Self::set_clipboard_via_command("xclip", &["-selection", "primary"], text);
+                return true;
+            }
+
+            // Try xsel as fallback
+            if Self::set_clipboard_via_command("xsel", &["--clipboard", "--input"], text) {
+                let _ = Self::set_clipboard_via_command("xsel", &["--primary", "--input"], text);
+                return true;
+            }
+
+            // Try wl-copy for Wayland
+            if Self::set_clipboard_via_command("wl-copy", &[], text) {
+                return true;
+            }
+
+            // Fall back to arboard
+            if let Ok(mut clipboard) = arboard::Clipboard::new() {
+                use arboard::{LinuxClipboardKind, SetExtLinux};
+                if clipboard
+                    .set()
+                    .clipboard(LinuxClipboardKind::Clipboard)
+                    .text(text.to_string())
+                    .is_ok()
+                {
+                    self.clipboard = Some(clipboard);
+                    return true;
+                }
+            }
+
+            self.status_message = Some("Copy failed: no clipboard tool available".to_string());
+            false
+        }
+
+        #[cfg(not(target_os = "linux"))]
+        {
+            match arboard::Clipboard::new() {
+                Ok(mut clipboard) => match clipboard.set_text(text) {
+                    Ok(_) => {
+                        self.clipboard = Some(clipboard);
+                        true
+                    }
+                    Err(e) => {
+                        self.status_message = Some(format!("Copy failed: {}", e));
+                        false
+                    }
+                },
+                Err(e) => {
+                    self.status_message = Some(format!("Clipboard init error: {}", e));
+                    false
                 }
             }
         }
+    }
+
+    /// Set clipboard via external command (Linux)
+    #[cfg(target_os = "linux")]
+    fn set_clipboard_via_command(cmd: &str, args: &[&str], text: &str) -> bool {
+        use std::io::Write;
+        use std::process::{Command, Stdio};
+
+        let mut child = match Command::new(cmd)
+            .args(args)
+            .stdin(Stdio::piped())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .spawn()
+        {
+            Ok(c) => c,
+            Err(_) => return false,
+        };
+
+        if let Some(mut stdin) = child.stdin.take() {
+            if stdin.write_all(text.as_bytes()).is_err() {
+                return false;
+            }
+        }
+
+        child.wait().map(|s| s.success()).unwrap_or(false)
     }
 
     /// Paste from clipboard to terminal
@@ -3330,10 +3377,18 @@ impl App {
         // Handle result
         if let Some(text) = text_to_paste {
             if !text.is_empty() {
-                // Send pasted text to the active session
+                // Send pasted text to the active session using bracketed paste mode
+                // This tells the shell to treat the entire paste as a single unit,
+                // preventing slow character-by-character processing
                 if let Some(session_id) = self.active_session {
                     if let Some(channel) = self.channels.get(&session_id) {
-                        let _ = channel.input_tx.send(text.into_bytes());
+                        // Bracketed paste mode: wrap text in escape sequences
+                        // \x1b[200~ = start paste, \x1b[201~ = end paste
+                        let mut paste_data = Vec::with_capacity(text.len() + 12);
+                        paste_data.extend_from_slice(b"\x1b[200~");
+                        paste_data.extend_from_slice(text.as_bytes());
+                        paste_data.extend_from_slice(b"\x1b[201~");
+                        let _ = channel.input_tx.send(paste_data);
                     }
                 }
             }
