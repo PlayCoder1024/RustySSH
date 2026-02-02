@@ -205,6 +205,8 @@ pub struct App {
     pub file_browser: Option<FileBrowser>,
     /// Transfer queue for SFTP operations
     pub transfer_queue: TransferQueue,
+    /// Active transfer workers
+    pub transfer_workers: HashMap<Uuid, mpsc::UnboundedSender<crate::sftp::TransferItem>>,
     /// Active SFTP host ID (for which host the SFTP view is showing)
     pub active_sftp_host: Option<Uuid>,
     /// View history stack for back navigation
@@ -300,6 +302,9 @@ impl App {
         // Initialize highlighter
         let highlighter = Highlighter::new(&config.settings.ui.terminal_highlight);
 
+        // Get event sender for bridge (before events is moved into struct)
+        let event_sender = events.sender();
+
         Ok(Self {
             view: View::default(),
             state: AppState::default(),
@@ -317,7 +322,20 @@ impl App {
             credentials,
             sftp_sessions: SftpSessionManager::new(),
             file_browser: None,
-            transfer_queue: TransferQueue::default(),
+            transfer_queue: {
+                let mut q = TransferQueue::default();
+                // Bridge transfer progress to main event loop
+                if let Some(mut rx) = q.take_progress_receiver() {
+                    let sender = event_sender.clone();
+                    tokio::spawn(async move {
+                        while let Some(progress) = rx.recv().await {
+                            let _ = sender.send(AppEvent::SftpProgress(progress));
+                        }
+                    });
+                }
+                q
+            },
+            transfer_workers: HashMap::new(),
             active_sftp_host: None,
             view_back_history: Vec::new(),
             view_forward_history: Vec::new(),
@@ -407,6 +425,72 @@ impl App {
     }
 
 
+
+
+    /// Process pending transfers
+    /// Process pending transfers
+    pub fn process_transfers(&mut self) {
+
+        // Start new transfers
+        let items = self.transfer_queue.process_pending();
+        for item in items {
+            self.spawn_transfer(item);
+        }
+    }
+
+    /// Spawn a transfer task
+    fn spawn_transfer(&mut self, item: crate::sftp::TransferItem) {
+        let host_id = item.host_id;
+        
+        // Retrieve host config and password BEFORE borrowing transfer_workers mutably
+        let host_config_opt = self.all_hosts().iter().find(|h| h.id == host_id).map(|h| (*h).clone());
+        let effective_password = if host_config_opt.is_some() {
+            let password = self.credentials.get_password(host_id).ok().flatten();
+            let session_pwd = self.session_passwords.get(&host_id).cloned();
+            session_pwd.or(password)
+        } else {
+            None
+        };
+
+        // Check if we have a worker for this host
+        if let std::collections::hash_map::Entry::Vacant(e) = self.transfer_workers.entry(host_id) {
+            
+            if let Some(host) = host_config_opt {
+                // Need to spawn a new worker
+                let (tx, rx) = mpsc::unbounded_channel();
+                let progress_tx = self.transfer_queue.progress_sender();
+                
+                let host_clone = host.clone(); 
+                let pwd = effective_password.clone();
+
+                // Spawn the worker thread
+                std::thread::spawn(move || {
+                     crate::sftp::transfer::run_transfer_worker(
+                        host_clone,
+                        pwd,
+                        rx,
+                        progress_tx
+                     );
+                });
+                
+                e.insert(tx);
+            } else {
+                // Host not found? Fail the transfer
+                self.transfer_queue.complete(item.id, Some("Host not found".to_string()));
+                return;
+            }
+        }
+        
+        // Send item to worker
+        if let Some(tx) = self.transfer_workers.get(&host_id) {
+            if let Err(e) = tx.send(item.clone()) {
+                // Worker died?
+                self.transfer_workers.remove(&host_id);
+                // Retry? Or fail? Fail for now.
+                self.transfer_queue.complete(item.id, Some("Transfer worker died".to_string()));
+            }
+        }
+    }
 
     /// Run the main application loop
     pub async fn run(&mut self) -> Result<()> {
@@ -587,6 +671,9 @@ impl App {
             }
                 should_redraw = false;
             }
+
+            // Process transfers
+            self.process_transfers();
 
             // Handle events with batching
             if let Some(event) = self.events.next().await {
@@ -829,11 +916,37 @@ impl App {
                         needs_redraw = true;
                     }
                 }
+                
                 Ok(needs_redraw)
             }
-            AppEvent::SftpProgress { .. } => {
-                // SFTP progress events handled elsewhere
-                Ok(true) // assume redraw needed for progress update
+            // SFTP progress
+            AppEvent::SftpProgress(progress) => {
+                // Update queue
+                self.transfer_queue.update_progress(progress.clone());
+                
+                // If this transfer completed or failed, we might want to refresh the view
+                // We can check if it's done by looking at the progress status/error
+                // Or better, check the queue after update.
+                let id = progress.id;
+                // Check if it was just moved to history (completed/failed)
+                // Accessing history:
+                let completed = self.transfer_queue.completed().iter().find(|t| t.id == id).is_some();
+                
+                if completed {
+                     // Trigger refresh of file browser if visible
+                     if let Some(browser) = &mut self.file_browser {
+                        // We assume upload/download based on something... 
+                        // Actually we don't know easily which pane without looking up the item.
+                        // But we can just refresh both or active/inactive?
+                        // Let's refresh both to be safe and simple.
+                        let _ = browser.left.load_local().await;
+                        if let Some(sftp) = self.active_sftp_host.and_then(|h| self.sftp_sessions.get_by_host(h)) {
+                            let _ = browser.right.load_remote(sftp);
+                        }
+                     }
+                }
+                
+                Ok(true) // Start redraw
             }
             AppEvent::ConnectionResult {
                 host_id: _,
@@ -1888,12 +2001,17 @@ impl App {
                     chain_host.clone(),
                     proxy,
                     password,
-                    None, // passphrase
+                    None,
                 )?;
 
                 if is_last {
-                    // Open SFTP on the final connection (target host)
-                    let sftp = connection.open_sftp()?;
+                    // Open SFTP
+                    let sftp = match connection.session_ref().sftp() {
+                        Ok(s) => s,
+                        Err(e) => {
+                            return Err(anyhow::anyhow!("Failed to open SFTP session: {}", e));
+                        }
+                    };
                     let conn_id = connection.id;
 
                     // Create SFTP session with blocking calls INSIDE spawn_blocking
@@ -2535,106 +2653,43 @@ impl App {
             .map(|b| b.inactive_pane().path.clone())
             .unwrap_or_default();
 
-        let _direction = if is_upload {
+        let direction = if is_upload {
             crate::sftp::TransferDirection::Upload
         } else {
             crate::sftp::TransferDirection::Download
         };
 
-        // Get SFTP session for transfer
-        let sftp_session = match self.sftp_sessions.get_by_host(host_id) {
-            Some(s) => s,
-            None => {
-                self.status_message = Some("SFTP session not found".to_string());
-                return Ok(());
-            }
-        };
-
         let file_count = source_files.len();
+        let mut added_count = 0;
 
-        for (source, _size) in source_files {
+        for (source, size) in source_files {
             let filename = source
                 .file_name()
                 .map(|n| n.to_os_string())
                 .unwrap_or_default();
             let dest = dest_path.join(&filename);
 
-            // Execute transfer immediately (synchronous for now, proper async later)
-            let result = if is_upload {
-                // Upload: read local file, write to remote
-                self.execute_upload(&source, &dest, sftp_session)
-            } else {
-                // Download: read from remote, write to local
-                self.execute_download(&source, &dest, sftp_session)
-            };
+            // Create transfer item
+            let item = crate::sftp::TransferItem::new(
+                source,
+                dest,
+                direction,
+                size,
+                host_id,
+            );
 
-            match result {
-                Ok(_) => {
-                    self.status_message =
-                        Some(format!("Transferred: {}", filename.to_string_lossy()));
-                }
-                Err(e) => {
-                    self.status_message = Some(format!("Transfer failed: {}", e));
-                }
-            }
+            // Add to queue
+            self.transfer_queue.add(item);
+            added_count += 1;
         }
+        
+        // Trigger processing immediately
+        self.process_transfers();
 
-        // Refresh destination pane
-        if let Some(browser) = &mut self.file_browser {
-            if is_upload {
-                // Refresh remote pane after upload
-                if let Some(sftp_session) = self.sftp_sessions.get_by_host(host_id) {
-                    let _ = browser.right.load_remote(sftp_session);
-                }
-            } else {
-                // Refresh local pane after download
-                let _ = browser.left.load_local().await;
-            }
-        }
-
-        self.status_message = Some(format!("Transferred {} file(s)", file_count));
-        Ok(())
-    }
-
-    /// Execute upload from local to remote
-    fn execute_upload(
-        &self,
-        source: &std::path::Path,
-        dest: &std::path::Path,
-        sftp_session: &SftpSession,
-    ) -> Result<()> {
-        use std::io::{Read, Write};
-
-        // Read local file
-        let mut local_file = std::fs::File::open(source)?;
-        let mut buffer = Vec::new();
-        local_file.read_to_end(&mut buffer)?;
-
-        // Write to remote
-        let mut remote_file = sftp_session.create(dest)?;
-        remote_file.write_all(&buffer)?;
-
-        Ok(())
-    }
-
-    /// Execute download from remote to local
-    fn execute_download(
-        &self,
-        source: &std::path::Path,
-        dest: &std::path::Path,
-        sftp_session: &SftpSession,
-    ) -> Result<()> {
-        use std::io::{Read, Write};
-
-        // Read remote file
-        let mut remote_file = sftp_session.open_read(source)?;
-        let mut buffer = Vec::new();
-        remote_file.read_to_end(&mut buffer)?;
-
-        // Write to local
-        let mut local_file = std::fs::File::create(dest)?;
-        local_file.write_all(&buffer)?;
-
+        self.status_message = Some(format!("Queued {} files for transfer", added_count));
+        
+        // Reload directory to show new files (eventually) - but this might be premature.
+        // We probably want to auto-refresh when transfer completes.
         Ok(())
     }
 

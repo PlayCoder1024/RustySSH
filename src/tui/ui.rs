@@ -90,6 +90,13 @@ pub fn render_with_state(frame: &mut Frame, state: &RenderState) -> Option<Rect>
         render_status_bar_state(frame, state, status_bar_area);
     }
 
+    // Render transfer popup if there are activity
+    if state.transfer_info.active_count > 0 || state.transfer_info.pending_count > 0 {
+         use crate::tui::widgets::TransferPopup;
+         let popup = TransferPopup::new(&state.transfer_info, &state.theme, area);
+         popup.render(frame);
+    }
+
     terminal_area
 }
 

@@ -2,7 +2,7 @@
 
 mod browser;
 mod sftp_session;
-mod transfer;
+pub mod transfer;
 
 pub use browser::{FileBrowser, FileEntry, FilePane, PaneSide, SortOrder};
 pub use sftp_session::{SftpSession, SftpSessionManager};

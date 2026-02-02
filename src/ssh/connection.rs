@@ -85,6 +85,11 @@ pub enum ConnectionStatus {
 }
 
 impl SshConnection {
+    /// Get the underlying SSH session
+    pub fn session_ref(&self) -> &Session {
+        &self.session
+    }
+
     /// Create a new direct connection to a host (no proxy)
     pub fn connect(
         host: HostConfig,

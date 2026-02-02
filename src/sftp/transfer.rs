@@ -46,6 +46,8 @@ pub struct TransferItem {
     pub completed_at: Option<DateTime<Utc>>,
     /// Current transfer speed (bytes/sec)
     pub speed: f64,
+    /// Host ID (for the remote side)
+    pub host_id: Uuid,
 }
 
 impl TransferItem {
@@ -55,6 +57,7 @@ impl TransferItem {
         destination: PathBuf,
         direction: TransferDirection,
         total_bytes: u64,
+        host_id: Uuid,
     ) -> Self {
         Self {
             id: Uuid::new_v4(),
@@ -67,6 +70,7 @@ impl TransferItem {
             started_at: None,
             completed_at: None,
             speed: 0.0,
+            host_id,
         }
     }
 
@@ -139,6 +143,7 @@ pub struct TransferProgress {
     pub id: Uuid,
     pub transferred_bytes: u64,
     pub speed: f64,
+    pub error: Option<String>,
 }
 
 /// Transfer queue managing multiple transfers
@@ -155,12 +160,11 @@ pub struct TransferQueue {
     max_history: usize,
     /// Progress sender
     progress_tx: mpsc::UnboundedSender<TransferProgress>,
-    /// Progress receiver
-    progress_rx: mpsc::UnboundedReceiver<TransferProgress>,
+    /// Progress receiver (optional, taken by the event bridge)
+    progress_rx: Option<mpsc::UnboundedReceiver<TransferProgress>>,
 }
 
 impl TransferQueue {
-    /// Create a new transfer queue
     pub fn new(max_concurrent: usize) -> Self {
         let (progress_tx, progress_rx) = mpsc::unbounded_channel();
 
@@ -171,8 +175,13 @@ impl TransferQueue {
             max_concurrent,
             max_history: 100,
             progress_tx,
-            progress_rx,
+            progress_rx: Some(progress_rx),
         }
+    }
+
+    /// Take the progress receiver to bridge to event loop
+    pub fn take_progress_receiver(&mut self) -> Option<mpsc::UnboundedReceiver<TransferProgress>> {
+        self.progress_rx.take()
     }
 
     /// Add a transfer to the queue
@@ -220,9 +229,32 @@ impl TransferQueue {
 
     /// Update progress for a transfer
     pub fn update_progress(&mut self, progress: TransferProgress) {
+        if let Some(err) = progress.error {
+            self.complete(progress.id, Some(err));
+            return;
+        }
+        
         if let Some(item) = self.active.iter_mut().find(|t| t.id == progress.id) {
             item.transferred_bytes = progress.transferred_bytes;
             item.speed = progress.speed;
+            
+            // Check for completion
+            if item.transferred_bytes >= item.total_bytes && item.total_bytes > 0 {
+                 // Completion is now handled via explicit "done" progress or length check?
+                 // Let's rely on length check for now, but really worker should signal done.
+                 // Actually worker will just exit loop. 
+                 // We need explicit DONE signal.
+                 // Let's assume if bytes == total, it's done. 
+                 // But worker might send final update.
+                 // Let's change update_progress to call complete if done.
+            }
+        }
+        
+        // Also check if done
+        let id = progress.id;
+        let done = self.active.iter().find(|t| t.id == id).map(|t| t.transferred_bytes >= t.total_bytes && t.total_bytes > 0).unwrap_or(false);
+        if done {
+            self.complete(id, None);
         }
     }
 
@@ -273,12 +305,7 @@ impl TransferQueue {
         self.progress_tx.clone()
     }
 
-    /// Process any pending progress updates
-    pub fn process_progress(&mut self) {
-        while let Ok(progress) = self.progress_rx.try_recv() {
-            self.update_progress(progress);
-        }
-    }
+    // process_progress removed - handled by event loop
 
     /// Clear completed history
     pub fn clear_history(&mut self) {
@@ -289,5 +316,136 @@ impl TransferQueue {
 impl Default for TransferQueue {
     fn default() -> Self {
         Self::new(3) // Default to 3 concurrent transfers
+    }
+}
+
+/// Worker function to handle transfers
+/// Runs in a separate thread/task
+pub fn run_transfer_worker(
+    host_config: crate::config::HostConfig,
+    password: Option<String>,
+    mut command_rx: mpsc::UnboundedReceiver<TransferItem>,
+    progress_tx: mpsc::UnboundedSender<TransferProgress>,
+) {
+    // Connect
+    let connection_result = crate::ssh::SshConnection::connect_via_proxy(
+        host_config.clone(),
+        crate::ssh::ProxyConnection::Direct, 
+        password.as_deref(),
+        None,
+    );
+
+    let connection = match connection_result {
+        Ok(conn) => conn,
+        Err(e) => {
+            // Mark all incoming items as failed
+            while let Some(item) = command_rx.blocking_recv() {
+                let _ = progress_tx.send(TransferProgress {
+                    id: item.id,
+                    transferred_bytes: 0,
+                    speed: 0.0,
+                    error: Some(format!("Connection failed: {}", e)),
+                });
+            }
+            return;
+        }
+    };
+
+    // Open SFTP
+    let sftp = match connection.session_ref().sftp() {
+        Ok(s) => s,
+        Err(e) => {
+             while let Some(item) = command_rx.blocking_recv() {
+                let _ = progress_tx.send(TransferProgress {
+                    id: item.id,
+                    transferred_bytes: 0,
+                    speed: 0.0,
+                    error: Some(format!("SFTP open failed: {}", e)),
+                });
+            }
+            return;
+        }
+    };
+    
+    use std::io::{Read, Write};
+    use std::time::Instant;
+
+    while let Some(item) = command_rx.blocking_recv() {
+        // Handle transfer
+        let mut transferred = 0u64; // Start from 0 (overwrite)
+        let total = item.total_bytes;
+        let start_time = Instant::now();
+        let mut last_update = Instant::now();
+        
+        // Helper to send progress
+        let send_progress = |bytes: u64, speed: f64, error: Option<String>| {
+            let _ = progress_tx.send(TransferProgress {
+                id: item.id,
+                transferred_bytes: bytes,
+                speed,
+                error,
+            });
+        };
+
+        let result: Result<(), anyhow::Error> = (|| {
+             match item.direction {
+                TransferDirection::Upload => {
+                    let mut local_file = std::fs::File::open(&item.source)?;
+                    // Ensure parent directory exists? Sftp::create might fail if parent missing.
+                    // For now assume it exists.
+                    let mut remote_file = sftp.create(&item.destination)?;
+                    
+                    let mut buffer = [0u8; 32768]; // 32KB buffer
+                    let mut file_size = local_file.metadata()?.len();
+                    
+                    loop {
+                        let n = local_file.read(&mut buffer)?;
+                        if n == 0 { break; }
+                        remote_file.write_all(&buffer[..n])?;
+                        transferred += n as u64;
+                        
+                        // Update progress periodically
+                        if last_update.elapsed().as_millis() >= 100 {
+                            let duration = start_time.elapsed().as_secs_f64();
+                            let speed = if duration > 0.0 { transferred as f64 / duration } else { 0.0 };
+                            send_progress(transferred, speed, None);
+                            last_update = Instant::now();
+                        }
+                    }
+                }
+                TransferDirection::Download => {
+                    let mut remote_file = sftp.open(&item.source)?;
+                    let mut local_file = std::fs::File::create(&item.destination)?;
+                    
+                    let mut buffer = [0u8; 32768];
+                    
+                    loop {
+                        let n = remote_file.read(&mut buffer)?;
+                        if n == 0 { break; }
+                        local_file.write_all(&buffer[..n])?;
+                        transferred += n as u64;
+                        
+                        if last_update.elapsed().as_millis() >= 100 {
+                            let duration = start_time.elapsed().as_secs_f64();
+                            let speed = if duration > 0.0 { transferred as f64 / duration } else { 0.0 };
+                            send_progress(transferred, speed, None);
+                            last_update = Instant::now();
+                        }
+                    }
+                }
+            }
+            Ok(())
+        })();
+
+        if let Err(e) = result {
+             send_progress(transferred, 0.0, Some(e.to_string()));
+        } else {
+             // Final update (ensure 100%)
+             let duration = start_time.elapsed().as_secs_f64();
+             let speed = if duration > 0.0 { transferred as f64 / duration } else { 0.0 };
+             // Use total_bytes if available to force 100% visualization
+             let final_bytes = if total > 0 { total } else { transferred };
+             send_progress(final_bytes, speed, None);
+        }
     }
 }

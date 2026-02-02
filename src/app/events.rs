@@ -28,11 +28,7 @@ pub enum AppEvent {
         reason: String,
     },
     /// SFTP transfer progress
-    SftpProgress {
-        transfer_id: uuid::Uuid,
-        bytes: u64,
-        total: u64,
-    },
+    SftpProgress(crate::sftp::TransferProgress),
     /// Error notification
     Error(String),
     /// Connection attempt completed (success or failure)

@@ -242,6 +242,16 @@ impl Theme {
     pub fn status_bar(&self) -> Style {
         Style::default().bg(self.bg_panel()).fg(self.fg_main())
     }
+
+    /// Popup border style
+    pub fn popup_border(&self) -> Style {
+        Style::default().fg(self.accent_primary())
+    }
+
+    /// Progress bar style
+    pub fn progress_bar(&self) -> Style {
+        Style::default().fg(self.accent_secondary()).bg(self.bg_highlight())
+    }
 }
 
 /// Gruvbox Dark theme
