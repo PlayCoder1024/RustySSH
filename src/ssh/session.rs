@@ -290,6 +290,74 @@ impl Session {
         }
         self.scroll_offset = self.vt.screen().scrollback();
     }
+    /// Select the word at the given position
+    pub fn select_word_at(&mut self, row: u16, col: u16) {
+        let screen = self.vt.screen();
+        let (_rows, cols) = screen.size();
+
+        if row >= _rows || col >= cols {
+            return;
+        }
+
+        // Helper to check if a char is a word separator
+        let is_separator = |c: char| -> bool {
+            c.is_whitespace() || " `~!@#$%^&*()-=+[{]}\\|;:'\",<.>/?".contains(c)
+        };
+
+        // Determine if we are starting on a separator or a word character
+        let char_under = screen
+            .cell(row, col)
+            .map(|c| c.contents().chars().next().unwrap_or(' '))
+            .unwrap_or(' ');
+        let target_is_sep = is_separator(char_under);
+
+        // Find start of the block (word or separator sequence)
+        let mut start = col;
+        while start > 0 {
+            let prev_char = screen
+                .cell(row, start - 1)
+                .map(|c| c.contents().chars().next().unwrap_or(' '))
+                .unwrap_or(' ');
+            
+            if is_separator(prev_char) != target_is_sep {
+                break;
+            }
+            start -= 1;
+        }
+
+        // Find end of the block
+        let mut end = col;
+        while end < cols.saturating_sub(1) {
+            let next_char = screen
+                .cell(row, end + 1)
+                .map(|c| c.contents().chars().next().unwrap_or(' '))
+                .unwrap_or(' ');
+            
+            if is_separator(next_char) != target_is_sep {
+                break;
+            }
+            end += 1;
+        }
+
+        self.selection = Some(TextSelection {
+            start: (row, start),
+            end: (row, end),
+        });
+        self.is_selecting = false; // Selection is complete (for now)
+    }
+
+    /// Select the entire row
+    pub fn select_row_at(&mut self, row: u16) {
+        let (_rows, cols) = self.vt.screen().size();
+        if row >= _rows {
+            return;
+        }
+        self.selection = Some(TextSelection {
+            start: (row, 0),
+            end: (row, cols.saturating_sub(1)),
+        });
+        self.is_selecting = false;
+    }
 }
 
 /// Session manager for multiple sessions

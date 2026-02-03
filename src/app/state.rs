@@ -294,6 +294,12 @@ pub struct App {
     pub key_manager: crate::ssh::KeyManager,
     /// Last time keys were scanned
     pub ssh_keys_last_scan: std::time::Instant,
+    /// Last click time for double/triple click detection
+    pub last_click_time: Option<std::time::Instant>,
+    /// Last click position (terminal row, col)
+    pub last_click_pos: Option<(u16, u16)>,
+    /// Consecutive click count
+    pub click_count: u8,
 }
 
 impl App {
@@ -388,6 +394,9 @@ impl App {
             temp_edit_buffer: String::new(),
             key_manager: crate::ssh::KeyManager::new(),
             ssh_keys_last_scan: std::time::Instant::now(),
+            last_click_time: None,
+            last_click_pos: None,
+            click_count: 0,
         })
     }
 
@@ -1031,19 +1040,45 @@ impl App {
             Down(MouseButton::Left) => {
                 if self.view == View::Session {
                     if let Some(area) = self.terminal_area {
-                        // Convert mouse coordinates to terminal cell position
-                        let term_row = mouse.row.saturating_sub(area.y);
-                        let term_col = mouse.column.saturating_sub(area.x);
-
-                        // Only start selection if within terminal bounds
+                        // Check bounds first
                         if mouse.row >= area.y
                             && mouse.row < area.y + area.height
                             && mouse.column >= area.x
                             && mouse.column < area.x + area.width
                         {
+                            // Convert mouse coordinates to terminal cell position
+                            let term_row = mouse.row.saturating_sub(area.y);
+                            let term_col = mouse.column.saturating_sub(area.x);
+
+                            // Check for double/triple click
+                            let now = std::time::Instant::now();
+                            let is_consecutive = if let (Some(last_time), Some(last_pos)) = (self.last_click_time, self.last_click_pos) {
+                                now.duration_since(last_time) < std::time::Duration::from_millis(500)
+                                    && last_pos == (term_row, term_col)
+                            } else {
+                                false
+                            };
+
+                            if is_consecutive {
+                                self.click_count += 1;
+                            } else {
+                                self.click_count = 1;
+                            }
+
+                            self.last_click_time = Some(now);
+                            self.last_click_pos = Some((term_row, term_col));
+
                             if let Some(session_id) = self.active_session {
                                 if let Some(session) = self.sessions.get_mut(session_id) {
-                                    session.start_selection(term_row, term_col);
+                                    match self.click_count {
+                                        1 => session.start_selection(term_row, term_col),
+                                        2 => session.select_word_at(term_row, term_col),
+                                        3 => session.select_row_at(term_row),
+                                        _ => {
+                                            self.click_count = 1;
+                                            session.start_selection(term_row, term_col);
+                                        }
+                                    }
                                 }
                             }
                         }
