@@ -12,6 +12,7 @@ use argon2::{
 use rand::rngs::OsRng;
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
+use tracing::{debug, info, warn};
 
 use super::KEYRING_SERVICE;
 
@@ -153,6 +154,7 @@ impl MasterPassword {
 
     /// Set up a new master password
     pub fn setup(&mut self, password: &str) -> Result<()> {
+        info!(target: "credentials", "Setting up new master password");
         // Generate salt for verification hash
         let salt = SaltString::generate(&mut OsRng);
 
@@ -175,23 +177,28 @@ impl MasterPassword {
 
         // Try to store in keyring first
         if !self.use_file_storage {
+            debug!(target: "credentials", "Attempting to store master password in keyring");
             match self.try_store_in_keyring(&hash, &kdf_salt) {
                 Ok(()) => {
+                    info!(target: "credentials", "Master password stored in keyring");
                     self.cached_hash = Some(hash);
                     self.kdf_salt = Some(kdf_salt);
                     return Ok(());
                 }
-                Err(_) => {
+                Err(e) => {
                     // Keyring failed, fall back to file
+                    debug!(target: "credentials", "Keyring storage failed, falling back to file: {}", e);
                     self.use_file_storage = true;
                 }
             }
         }
 
         // Store in file
+        debug!(target: "credentials", "Storing master password in file");
         self.store_in_file(&hash, &kdf_salt)?;
         self.cached_hash = Some(hash);
         self.kdf_salt = Some(kdf_salt);
+        info!(target: "credentials", "Master password setup complete");
 
         Ok(())
     }
@@ -228,6 +235,7 @@ impl MasterPassword {
 
     /// Verify the master password
     pub fn verify(&self, password: &str) -> Result<bool> {
+        debug!(target: "credentials", "Verifying master password");
         let hash_str = self
             .cached_hash
             .as_ref()
@@ -241,9 +249,17 @@ impl MasterPassword {
             .map_err(|e| anyhow!("Failed to create Argon2 params: {}", e))?;
         let argon2 = Argon2::new(Algorithm::Argon2id, Version::V0x13, params);
 
-        Ok(argon2
+        let result = argon2
             .verify_password(password.as_bytes(), &parsed_hash)
-            .is_ok())
+            .is_ok();
+
+        if result {
+            debug!(target: "credentials", "Master password verified successfully");
+        } else {
+            warn!(target: "credentials", "Master password verification failed");
+        }
+
+        Ok(result)
     }
 
     /// Derive an encryption key from the master password

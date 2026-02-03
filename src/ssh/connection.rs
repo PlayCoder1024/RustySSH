@@ -7,6 +7,7 @@ use std::collections::HashMap;
 use std::io::Read;
 use std::net::{TcpStream, ToSocketAddrs};
 use std::time::Duration;
+use tracing::{debug, error, info};
 
 use uuid::Uuid;
 
@@ -113,12 +114,17 @@ impl SshConnection {
             ProxyConnection::Direct => {
                 // Direct TCP connection with timeout
                 let addr = format!("{}:{}", host.hostname, host.port);
+                info!(target: "ssh", "Connecting directly to {}", addr);
+
+                debug!(target: "ssh", "Resolving DNS for {}", host.hostname);
                 let socket_addr = addr
                     .to_socket_addrs()
                     .map_err(|e| anyhow!("Failed to resolve {}: {}", addr, e))?
                     .next()
                     .ok_or_else(|| anyhow!("No addresses found for {}", addr))?;
+                debug!(target: "ssh", "Resolved {} to {}", host.hostname, socket_addr);
 
+                debug!(target: "ssh", "Establishing TCP connection to {}", socket_addr);
                 let stream = TcpStream::connect_timeout(&socket_addr, CONNECT_TIMEOUT)
                     .map_err(|e| anyhow!("Connection to {} timed out or failed: {}", addr, e))?;
 
@@ -129,18 +135,22 @@ impl SshConnection {
 
                 session.set_tcp_stream(stream.try_clone()?);
 
+                debug!(target: "ssh", "Performing SSH handshake with {}", host.hostname);
                 session
                     .handshake()
                     .map_err(|e| anyhow!("SSH handshake failed: {}", e))?;
+                debug!(target: "ssh", "SSH handshake completed with {}", host.hostname);
 
                 crate::ssh::auth::Authenticator::authenticate_any(
                     &session, &host, password, passphrase,
                 )?;
 
                 if !session.authenticated() {
+                    error!(target: "ssh", "Authentication failed for {}@{}", host.username, host.hostname);
                     return Err(anyhow!("Authentication failed"));
                 }
 
+                info!(target: "ssh", "Successfully connected to {}@{}", host.username, host.hostname);
                 Ok(Self {
                     id: Uuid::new_v4(),
                     host,
@@ -154,11 +164,13 @@ impl SshConnection {
             ProxyConnection::JumpHost { connection } => {
                 // Connect through jump host using direct-tcpip channel
                 let addr = format!("{}:{}", host.hostname, host.port);
+                info!(target: "ssh", "Connecting to {} via jump host {}", addr, connection.host.hostname);
 
                 // Ensure the jump connection session is in blocking mode for channel setup
                 connection.session.set_blocking(true);
 
                 // Open a direct-tcpip channel through the jump host
+                debug!(target: "ssh", "Opening direct-tcpip channel through jump host to {}", addr);
                 let channel = connection
                     .session
                     .channel_direct_tcpip(
@@ -169,6 +181,7 @@ impl SshConnection {
                     .map_err(|e| {
                         anyhow!("Failed to open tunnel through jump host to {}: {}", addr, e)
                     })?;
+                debug!(target: "ssh", "Direct-tcpip channel opened to {}", addr);
 
                 // Set session back to non-blocking mode for the proxy thread
                 // This is critical! Without this, channel.read() will block forever
@@ -194,6 +207,7 @@ impl SshConnection {
 
                 session.set_tcp_stream(local_stream.try_clone()?);
 
+                debug!(target: "ssh", "Performing SSH handshake through jump host to {}", host.hostname);
                 session
                     .handshake()
                     .map_err(|e| anyhow!("SSH handshake through jump host failed: {}", e))?;
@@ -203,9 +217,11 @@ impl SshConnection {
                 )?;
 
                 if !session.authenticated() {
+                    error!(target: "ssh", "Authentication through jump host failed for {}@{}", host.username, host.hostname);
                     return Err(anyhow!("Authentication through jump host failed"));
                 }
 
+                info!(target: "ssh", "Successfully connected to {}@{} via jump host", host.username, host.hostname);
                 Ok(Self {
                     id: Uuid::new_v4(),
                     host,
@@ -223,6 +239,9 @@ impl SshConnection {
             } => {
                 // Connect to SOCKS5 proxy
                 let proxy_addr = format!("{}:{}", address, port);
+                let target_addr = format!("{}:{}", host.hostname, host.port);
+                info!(target: "ssh", "Connecting to {} via SOCKS5 proxy {}", target_addr, proxy_addr);
+
                 let socket_addr = proxy_addr
                     .to_socket_addrs()
                     .map_err(|e| anyhow!("Failed to resolve SOCKS5 proxy {}: {}", proxy_addr, e))?
@@ -235,7 +254,9 @@ impl SshConnection {
                     })?;
 
                 // SOCKS5 handshake (RFC 1928)
+                debug!(target: "ssh", "Performing SOCKS5 handshake with proxy {}", proxy_addr);
                 Self::socks5_handshake(&mut stream, &host.hostname, host.port, auth.as_ref())?;
+                debug!(target: "ssh", "SOCKS5 handshake completed, tunnel established to {}", target_addr);
 
                 stream.set_nonblocking(false)?;
 
@@ -244,6 +265,7 @@ impl SshConnection {
 
                 session.set_tcp_stream(stream.try_clone()?);
 
+                debug!(target: "ssh", "Performing SSH handshake through SOCKS5 proxy to {}", host.hostname);
                 session
                     .handshake()
                     .map_err(|e| anyhow!("SSH handshake through SOCKS5 proxy failed: {}", e))?;
@@ -253,9 +275,11 @@ impl SshConnection {
                 )?;
 
                 if !session.authenticated() {
+                    error!(target: "ssh", "Authentication through SOCKS5 proxy failed for {}@{}", host.username, host.hostname);
                     return Err(anyhow!("Authentication through SOCKS5 proxy failed"));
                 }
 
+                info!(target: "ssh", "Successfully connected to {}@{} via SOCKS5 proxy", host.username, host.hostname);
                 Ok(Self {
                     id: Uuid::new_v4(),
                     host,
@@ -273,6 +297,9 @@ impl SshConnection {
             } => {
                 // Connect to SOCKS4 proxy
                 let proxy_addr = format!("{}:{}", address, port);
+                let target_addr = format!("{}:{}", host.hostname, host.port);
+                info!(target: "ssh", "Connecting to {} via SOCKS4 proxy {}", target_addr, proxy_addr);
+
                 let socket_addr = proxy_addr
                     .to_socket_addrs()
                     .map_err(|e| anyhow!("Failed to resolve SOCKS4 proxy {}: {}", proxy_addr, e))?
@@ -285,7 +312,9 @@ impl SshConnection {
                     })?;
 
                 // SOCKS4 connect request
+                debug!(target: "ssh", "Performing SOCKS4 handshake with proxy {}", proxy_addr);
                 Self::socks4_handshake(&mut stream, &host.hostname, host.port, user_id.as_deref())?;
+                debug!(target: "ssh", "SOCKS4 handshake completed, tunnel established to {}", target_addr);
 
                 stream.set_nonblocking(false)?;
 
@@ -294,6 +323,7 @@ impl SshConnection {
 
                 session.set_tcp_stream(stream.try_clone()?);
 
+                debug!(target: "ssh", "Performing SSH handshake through SOCKS4 proxy to {}", host.hostname);
                 session
                     .handshake()
                     .map_err(|e| anyhow!("SSH handshake through SOCKS4 proxy failed: {}", e))?;
@@ -303,9 +333,11 @@ impl SshConnection {
                 )?;
 
                 if !session.authenticated() {
+                    error!(target: "ssh", "Authentication through SOCKS4 proxy failed for {}@{}", host.username, host.hostname);
                     return Err(anyhow!("Authentication through SOCKS4 proxy failed"));
                 }
 
+                info!(target: "ssh", "Successfully connected to {}@{} via SOCKS4 proxy", host.username, host.hostname);
                 Ok(Self {
                     id: Uuid::new_v4(),
                     host,
@@ -323,6 +355,9 @@ impl SshConnection {
             } => {
                 // Connect to HTTP CONNECT proxy
                 let proxy_addr = format!("{}:{}", address, port);
+                let target_addr = format!("{}:{}", host.hostname, host.port);
+                info!(target: "ssh", "Connecting to {} via HTTP CONNECT proxy {}", target_addr, proxy_addr);
+
                 let socket_addr = proxy_addr
                     .to_socket_addrs()
                     .map_err(|e| anyhow!("Failed to resolve HTTP proxy {}: {}", proxy_addr, e))?
@@ -335,12 +370,14 @@ impl SshConnection {
                     })?;
 
                 // HTTP CONNECT request
+                debug!(target: "ssh", "Sending HTTP CONNECT request to proxy {}", proxy_addr);
                 Self::http_connect_handshake(
                     &mut stream,
                     &host.hostname,
                     host.port,
                     auth.as_ref(),
                 )?;
+                debug!(target: "ssh", "HTTP CONNECT tunnel established to {}", target_addr);
 
                 stream.set_nonblocking(false)?;
 
@@ -349,6 +386,7 @@ impl SshConnection {
 
                 session.set_tcp_stream(stream.try_clone()?);
 
+                debug!(target: "ssh", "Performing SSH handshake through HTTP proxy to {}", host.hostname);
                 session
                     .handshake()
                     .map_err(|e| anyhow!("SSH handshake through HTTP proxy failed: {}", e))?;
@@ -358,9 +396,11 @@ impl SshConnection {
                 )?;
 
                 if !session.authenticated() {
+                    error!(target: "ssh", "Authentication through HTTP proxy failed for {}@{}", host.username, host.hostname);
                     return Err(anyhow!("Authentication through HTTP proxy failed"));
                 }
 
+                info!(target: "ssh", "Successfully connected to {}@{} via HTTP proxy", host.username, host.hostname);
                 Ok(Self {
                     id: Uuid::new_v4(),
                     host,
@@ -380,6 +420,8 @@ impl SshConnection {
                 let expanded_command = command
                     .replace("%h", &target_host)
                     .replace("%p", &target_port.to_string());
+                info!(target: "ssh", "Connecting to {}:{} via ProxyCommand", target_host, target_port);
+                debug!(target: "ssh", "Executing proxy command: {}", expanded_command);
 
                 // Parse command (simple shell-style splitting)
                 let parts: Vec<&str> = expanded_command.split_whitespace().collect();
@@ -394,12 +436,14 @@ impl SshConnection {
                     .stderr(std::process::Stdio::null())
                     .spawn()
                     .map_err(|e| {
+                        error!(target: "ssh", "Failed to execute proxy command '{}': {}", expanded_command, e);
                         anyhow!(
                             "Failed to execute proxy command '{}': {}",
                             expanded_command,
                             e
                         )
                     })?;
+                debug!(target: "ssh", "Proxy command started successfully");
 
                 // Create a socket pair to bridge the child process to ssh2's TcpStream requirement
                 let (local_stream, remote_stream) = Self::create_socket_pair()?;
@@ -424,6 +468,7 @@ impl SshConnection {
 
                 session.set_tcp_stream(local_stream.try_clone()?);
 
+                debug!(target: "ssh", "Performing SSH handshake through proxy command to {}", host.hostname);
                 session
                     .handshake()
                     .map_err(|e| anyhow!("SSH handshake through proxy command failed: {}", e))?;
@@ -433,9 +478,11 @@ impl SshConnection {
                 )?;
 
                 if !session.authenticated() {
+                    error!(target: "ssh", "Authentication through proxy command failed for {}@{}", host.username, host.hostname);
                     return Err(anyhow!("Authentication through proxy command failed"));
                 }
 
+                info!(target: "ssh", "Successfully connected to {}@{} via ProxyCommand", host.username, host.hostname);
                 Ok(Self {
                     id: Uuid::new_v4(),
                     host,
@@ -831,6 +878,7 @@ impl SshConnection {
 
     /// Open an interactive shell channel
     pub fn open_shell(&mut self, cols: u32, rows: u32) -> Result<ssh2::Channel> {
+        debug!(target: "ssh", "Opening shell channel for {}@{} ({}x{})", self.host.username, self.host.hostname, cols, rows);
         let mut channel = self
             .session
             .channel_session()
@@ -849,11 +897,22 @@ impl SshConnection {
         // Set session to non-blocking for async I/O
         self.session.set_blocking(false);
 
+        // Also set the underlying stream to non-blocking
+        // This is critical because ssh2 doesn't automatically set the stream to non-blocking
+        // and if the stream remains blocking, session.read() will block despite session.set_blocking(false)
+        if let Some(stream) = self._stream.as_ref() {
+            stream
+                .set_nonblocking(true)
+                .map_err(|e| anyhow!("Failed to set stream non-blocking: {}", e))?;
+        }
+
+        info!(target: "ssh", "Shell channel opened for {}@{}", self.host.username, self.host.hostname);
         Ok(channel)
     }
 
     /// Open a direct TCP/IP channel (for port forwarding)
     pub fn open_direct_tcpip(&self, host: &str, port: u16) -> Result<ssh2::Channel> {
+        debug!(target: "ssh", "Opening direct-tcpip channel to {}:{}", host, port);
         self.session
             .channel_direct_tcpip(host, port, None)
             .map_err(|e| anyhow!("Failed to open direct-tcpip channel: {}", e))
@@ -863,6 +922,7 @@ impl SshConnection {
     /// Note: The session stays in blocking mode for SFTP operations
     /// SFTP connections should be dedicated (separate from shell connections)
     pub fn open_sftp(&self) -> Result<ssh2::Sftp> {
+        debug!(target: "ssh", "Opening SFTP subsystem for {}@{}", self.host.username, self.host.hostname);
         // SFTP operations require blocking mode
         // Since SFTP sessions should use dedicated connections (not shared with shell),
         // we keep the session in blocking mode for all SFTP operations to work correctly
@@ -876,6 +936,7 @@ impl SshConnection {
         // Keep in blocking mode - SFTP operations (readdir, create, read, write)
         // all require blocking mode to work correctly
 
+        info!(target: "ssh", "SFTP subsystem opened for {}@{}", self.host.username, self.host.hostname);
         Ok(sftp)
     }
 

@@ -4,6 +4,7 @@ use chrono::{DateTime, Utc};
 use std::collections::VecDeque;
 use std::path::PathBuf;
 use tokio::sync::mpsc;
+use tracing::{debug, info, warn};
 use uuid::Uuid;
 
 /// Transfer direction
@@ -187,6 +188,12 @@ impl TransferQueue {
     /// Add a transfer to the queue
     pub fn add(&mut self, item: TransferItem) -> Uuid {
         let id = item.id;
+        let direction = match item.direction {
+            TransferDirection::Upload => "upload",
+            TransferDirection::Download => "download",
+        };
+        info!(target: "sftp::transfer", "Transfer queued: {} {} -> {} ({} bytes)",
+            direction, item.source.display(), item.destination.display(), item.total_bytes);
         self.pending.push_back(item);
         id
     }
@@ -213,6 +220,7 @@ impl TransferQueue {
 
     /// Cancel a transfer
     pub fn cancel(&mut self, id: Uuid) {
+        info!(target: "sftp::transfer", "Cancelling transfer {}", id);
         // Check pending
         if let Some(pos) = self.pending.iter().position(|t| t.id == id) {
             if let Some(mut item) = self.pending.remove(pos) {
@@ -264,9 +272,11 @@ impl TransferQueue {
             let mut item = self.active.remove(pos);
             item.completed_at = Some(Utc::now());
 
-            if let Some(err) = error {
-                item.status = TransferStatus::Failed(err);
+            if let Some(ref err) = error {
+                warn!(target: "sftp::transfer", "Transfer {} failed: {}", id, err);
+                item.status = TransferStatus::Failed(err.clone());
             } else {
+                info!(target: "sftp::transfer", "Transfer {} completed successfully", id);
                 item.status = TransferStatus::Completed;
             }
 
@@ -327,17 +337,24 @@ pub fn run_transfer_worker(
     mut command_rx: mpsc::UnboundedReceiver<TransferItem>,
     progress_tx: mpsc::UnboundedSender<TransferProgress>,
 ) {
+    info!(target: "sftp::transfer", "Transfer worker starting for {}@{}", host_config.username, host_config.hostname);
+
     // Connect
+    debug!(target: "sftp::transfer", "Establishing SSH connection for transfers");
     let connection_result = crate::ssh::SshConnection::connect_via_proxy(
         host_config.clone(),
-        crate::ssh::ProxyConnection::Direct, 
+        crate::ssh::ProxyConnection::Direct,
         password.as_deref(),
         None,
     );
 
     let connection = match connection_result {
-        Ok(conn) => conn,
+        Ok(conn) => {
+            info!(target: "sftp::transfer", "Transfer worker connected to {}@{}", host_config.username, host_config.hostname);
+            conn
+        }
         Err(e) => {
+            warn!(target: "sftp::transfer", "Transfer worker connection failed: {}", e);
             // Mark all incoming items as failed
             while let Some(item) = command_rx.blocking_recv() {
                 let _ = progress_tx.send(TransferProgress {
@@ -352,9 +369,14 @@ pub fn run_transfer_worker(
     };
 
     // Open SFTP
+    debug!(target: "sftp::transfer", "Opening SFTP subsystem for transfers");
     let sftp = match connection.session_ref().sftp() {
-        Ok(s) => s,
+        Ok(s) => {
+            info!(target: "sftp::transfer", "SFTP subsystem opened for transfers");
+            s
+        }
         Err(e) => {
+            warn!(target: "sftp::transfer", "Failed to open SFTP subsystem: {}", e);
              while let Some(item) = command_rx.blocking_recv() {
                 let _ = progress_tx.send(TransferProgress {
                     id: item.id,
@@ -366,17 +388,24 @@ pub fn run_transfer_worker(
             return;
         }
     };
-    
+
     use std::io::{Read, Write};
     use std::time::Instant;
 
     while let Some(item) = command_rx.blocking_recv() {
+        let direction = match item.direction {
+            TransferDirection::Upload => "upload",
+            TransferDirection::Download => "download",
+        };
+        info!(target: "sftp::transfer", "Starting {}: {} -> {} ({} bytes)",
+            direction, item.source.display(), item.destination.display(), item.total_bytes);
+
         // Handle transfer
         let mut transferred = 0u64; // Start from 0 (overwrite)
         let total = item.total_bytes;
         let start_time = Instant::now();
         let mut last_update = Instant::now();
-        
+
         // Helper to send progress
         let send_progress = |bytes: u64, speed: f64, error: Option<String>| {
             let _ = progress_tx.send(TransferProgress {
@@ -394,7 +423,7 @@ pub fn run_transfer_worker(
                     // Ensure parent directory exists? Sftp::create might fail if parent missing.
                     // For now assume it exists.
                     let mut remote_file = sftp.create(&item.destination)?;
-                    
+
                     let mut buffer = [0u8; 32768]; // 32KB buffer
                     let _file_size = local_file.metadata()?.len();
                     

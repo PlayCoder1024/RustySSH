@@ -11,6 +11,7 @@ use rand::RngCore;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::path::PathBuf;
+use tracing::{debug, info, warn};
 use uuid::Uuid;
 use zeroize::Zeroize;
 
@@ -45,12 +46,15 @@ impl CredentialVault {
     /// Load the vault from disk
     pub async fn load() -> Result<Self> {
         let path = Self::vault_path();
+        debug!(target: "credentials", "Loading credential vault from {}", path.display());
 
         if path.exists() {
             let content = tokio::fs::read_to_string(&path).await?;
             let vault: CredentialVault = serde_json::from_str(&content)?;
+            info!(target: "credentials", "Loaded credential vault with {} credentials", vault.credentials.len());
             Ok(vault)
         } else {
+            debug!(target: "credentials", "No existing vault found, creating new one");
             Ok(Self::default())
         }
     }
@@ -58,6 +62,7 @@ impl CredentialVault {
     /// Save the vault to disk
     pub async fn save(&self) -> Result<()> {
         let path = Self::vault_path();
+        debug!(target: "credentials", "Saving credential vault to {}", path.display());
 
         // Create parent directories
         if let Some(parent) = path.parent() {
@@ -66,11 +71,13 @@ impl CredentialVault {
 
         let content = serde_json::to_string_pretty(self)?;
         tokio::fs::write(&path, content).await?;
+        info!(target: "credentials", "Saved credential vault with {} credentials", self.credentials.len());
         Ok(())
     }
 
     /// Store a password (encrypted)
     pub fn store(&mut self, host_id: Uuid, password: &str, key: &[u8; 32]) -> Result<()> {
+        debug!(target: "credentials", "Storing credential for host {}", host_id);
         // Generate random nonce (96 bits for GCM)
         let mut nonce_bytes = [0u8; 12];
         rand::rngs::OsRng.fill_bytes(&mut nonce_bytes);
@@ -94,14 +101,19 @@ impl CredentialVault {
         };
 
         self.credentials.insert(host_id, credential);
+        info!(target: "credentials", "Credential stored for host {}", host_id);
         Ok(())
     }
 
     /// Retrieve a password (decrypted)
     pub fn retrieve(&self, host_id: Uuid, key: &[u8; 32]) -> Result<Option<String>> {
+        debug!(target: "credentials", "Retrieving credential for host {}", host_id);
         let credential = match self.credentials.get(&host_id) {
             Some(c) => c,
-            None => return Ok(None),
+            None => {
+                debug!(target: "credentials", "No credential found for host {}", host_id);
+                return Ok(None);
+            }
         };
 
         use base64::Engine;
@@ -128,7 +140,10 @@ impl CredentialVault {
         // Decrypt
         let mut plaintext = cipher
             .decrypt(nonce, ciphertext.as_ref())
-            .map_err(|e| anyhow!("Failed to decrypt password: {}", e))?;
+            .map_err(|e| {
+                warn!(target: "credentials", "Failed to decrypt credential for host {}: {}", host_id, e);
+                anyhow!("Failed to decrypt password: {}", e)
+            })?;
 
         let password = String::from_utf8(plaintext.clone())
             .map_err(|e| anyhow!("Invalid UTF-8 in decrypted password: {}", e))?;
@@ -136,6 +151,7 @@ impl CredentialVault {
         // Zeroize the plaintext buffer
         plaintext.zeroize();
 
+        debug!(target: "credentials", "Credential retrieved for host {}", host_id);
         Ok(Some(password))
     }
 

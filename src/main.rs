@@ -1,16 +1,18 @@
 //! RustySSH Entry Point
 
 use anyhow::Result;
-use rustyssh::App;
-use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt, EnvFilter};
+use rustyssh::{logging, App, Config};
+use tracing::info;
 
 #[tokio::main]
 async fn main() -> Result<()> {
-    // Initialize logging
-    tracing_subscriber::registry()
-        .with(EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("info")))
-        .with(tracing_subscriber::fmt::layer().with_target(false))
-        .init();
+    // Load config synchronously to get logging settings before app starts
+    let config = Config::load_sync().unwrap_or_default();
+
+    // Initialize file-based logging (returns guard that must be kept alive)
+    let _logging_guard = logging::init(&config.settings.logging);
+
+    info!("RustySSH start. Version {}", "0.2.0");
 
     // Run the application
     let mut app = App::new().await?;

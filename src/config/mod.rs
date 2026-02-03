@@ -4,7 +4,7 @@ mod hosts;
 mod settings;
 
 pub use hosts::{AuthMethod, HostConfig, HostGroup, JumpHostRef, ProxyConfig};
-pub use settings::Settings;
+pub use settings::{LogSettings, Settings};
 
 use anyhow::Result;
 use serde::{Deserialize, Serialize};
@@ -66,6 +66,20 @@ impl Config {
             let config = Config::default();
             config.save().await?;
             Ok(config)
+        }
+    }
+
+    /// Load configuration synchronously (for early initialization like logging)
+    pub fn load_sync() -> Result<Self> {
+        let path = Self::config_path();
+
+        if path.exists() {
+            let content = std::fs::read_to_string(&path)?;
+            let config: Config = serde_yaml::from_str(&content)?;
+            Ok(config)
+        } else {
+            // Return default without saving (async save will happen later)
+            Ok(Config::default())
         }
     }
 

@@ -9,6 +9,7 @@
 pub mod app;
 pub mod config;
 pub mod credentials;
+pub mod logging;
 pub mod sftp;
 pub mod ssh;
 pub mod tui;

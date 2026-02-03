@@ -14,6 +14,7 @@ use std::collections::HashMap;
 use std::io::{Read, Write};
 use std::time::{Duration, Instant};
 use tokio::sync::mpsc;
+use tracing::{debug, info, warn};
 use uuid::Uuid;
 
 /// Current application view
@@ -770,18 +771,18 @@ impl App {
                 }
 
                 // Handle Ctrl+Shift combinations (copy/paste in session)
-                // Only Ctrl+Shift+C/V are supported to avoid conflict with terminal interrupt (Ctrl+C)
-                // Note: Some terminals report Ctrl+Shift+C as uppercase 'C' with only CONTROL modifier
+                // Only Ctrl+Shift+Y/P are supported to avoid conflict with terminal interrupt (Ctrl+C)
+                // Note: Some terminals report Ctrl+Shift+Y/P as uppercase 'Y'/'P' with only CONTROL modifier
                 if self.view == View::Session && key.modifiers.contains(KeyModifiers::CONTROL) {
-                    // Check for Copy: Ctrl+Shift+c/C (explicit shift) OR Ctrl+C (uppercase implies shift)
+                    // Check for Copy: Ctrl+Shift+y/Y (explicit shift) OR Ctrl+Y (uppercase implies shift)
                     let is_copy = (key.modifiers.contains(KeyModifiers::SHIFT)
-                        && matches!(key.code, KeyCode::Char('c') | KeyCode::Char('C')))
-                        || key.code == KeyCode::Char('C');
+                        && matches!(key.code, KeyCode::Char('y') | KeyCode::Char('Y')))
+                        || key.code == KeyCode::Char('Y');
 
                     // Check for Paste: Ctrl+Shift+v/V (explicit shift) OR Ctrl+V (uppercase implies shift)
                     let is_paste = (key.modifiers.contains(KeyModifiers::SHIFT)
-                        && matches!(key.code, KeyCode::Char('v') | KeyCode::Char('V')))
-                        || key.code == KeyCode::Char('V');
+                        && matches!(key.code, KeyCode::Char('p') | KeyCode::Char('P')))
+                        || key.code == KeyCode::Char('P');
 
                     if is_copy {
                         // Copy selected text to clipboard
@@ -795,11 +796,11 @@ impl App {
                     }
                 }
 
-                // Handle Ctrl+F for find (in session view)
+                // Handle Ctrl+Shift+F for find (in session view)
                 if self.view == View::Session
                     && key.modifiers.contains(KeyModifiers::CONTROL)
-                    && !key.modifiers.contains(KeyModifiers::SHIFT)
-                    && key.code == KeyCode::Char('f')
+                    && key.modifiers.contains(KeyModifiers::SHIFT)
+                    && matches!(key.code, KeyCode::Char('f') | KeyCode::Char('F'))
                 {
                     self.find_overlay_visible = true;
                     self.find_query.clear();
@@ -1518,6 +1519,7 @@ impl App {
     /// Handles proxy chains (jump hosts) with recursive password prompts
     /// Integrates with credential manager for saved passwords
     async fn connect_to_host(&mut self, host: HostConfig) -> Result<()> {
+        info!(target: "app", "Initiating connection to {}", host.name);
         self.status_message = Some(format!("Connecting to {}...", host.name));
 
         // Get terminal size
@@ -1532,6 +1534,10 @@ impl App {
 
         // Resolve the full proxy chain
         let proxy_chain = self.config.resolve_proxy_chain(&host);
+        if proxy_chain.len() > 1 {
+            let chain_names: Vec<_> = proxy_chain.iter().map(|h| h.name.as_str()).collect();
+            debug!(target: "app", "Proxy chain resolved: {:?}", chain_names);
+        }
 
         // Collect passwords for all hosts in the chain that need password auth
         let mut passwords: std::collections::HashMap<uuid::Uuid, String> =
@@ -1842,6 +1848,7 @@ impl App {
         passwords_used: std::collections::HashMap<Uuid, String>,
         hosts_to_save: Vec<Uuid>,
     ) -> Result<()> {
+        info!(target: "app", "Connection successful to {}", host_name);
         let connection_id = connection.id;
 
         // Get terminal size
@@ -1854,7 +1861,7 @@ impl App {
             if let Some(pwd) = passwords_used.get(host_to_save_id) {
                 if self.credentials.is_unlocked() {
                     if let Err(e) = self.credentials.save_password(*host_to_save_id, pwd).await {
-                        tracing::warn!("Failed to save password: {}", e);
+                        warn!(target: "app", "Failed to save password: {}", e);
                     }
                 }
             }
@@ -1863,6 +1870,7 @@ impl App {
         // Open shell channel
         match connection.open_shell(cols, rows) {
             Ok(channel) => {
+                info!(target: "app", "Session created for {}", host_name);
                 // Create session for terminal emulation
                 let session_id = self.sessions.create_session(
                     host_id,
@@ -1915,11 +1923,12 @@ impl App {
 
     /// Handle connection failure (called from Tick when connection fails)
     async fn handle_connection_failure(&mut self, error_msg: &str, hosts_to_save: Vec<Uuid>) {
+        warn!(target: "app", "Connection failed: {}", error_msg);
         // Connection failed - if we used saved passwords, clear them
         for host_to_save_id in &hosts_to_save {
             if self.credentials.has_saved_password(*host_to_save_id) {
                 if let Err(del_err) = self.credentials.delete_password(*host_to_save_id).await {
-                    tracing::warn!("Failed to delete invalid password: {}", del_err);
+                    warn!(target: "app", "Failed to delete invalid password: {}", del_err);
                 }
             }
         }

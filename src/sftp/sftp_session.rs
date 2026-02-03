@@ -7,6 +7,7 @@ use chrono::{DateTime, Utc};
 use ssh2::{FileStat, Sftp};
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
+use tracing::{debug, info, warn};
 use uuid::Uuid;
 
 use super::browser::FileEntry;
@@ -65,6 +66,7 @@ impl SftpSession {
 
     /// Read a remote directory and return file entries
     pub fn read_dir(&self, path: &Path) -> Result<Vec<FileEntry>> {
+        debug!(target: "sftp", "Reading directory: {}", path.display());
         let mut entries = Vec::new();
 
         // Add parent directory entry if not at root
@@ -94,6 +96,7 @@ impl SftpSession {
             entries.push(entry);
         }
 
+        info!(target: "sftp", "Read directory {}: {} entries", path.display(), entries.len());
         Ok(entries)
     }
 
@@ -113,35 +116,57 @@ impl SftpSession {
 
     /// Create a directory
     pub fn mkdir(&self, path: &Path, mode: i32) -> Result<()> {
+        info!(target: "sftp", "Creating directory: {}", path.display());
         self.sftp
             .mkdir(path, mode)
-            .map_err(|e| anyhow!("Failed to mkdir {}: {}", path.display(), e))
+            .map_err(|e| {
+                warn!(target: "sftp", "Failed to create directory {}: {}", path.display(), e);
+                anyhow!("Failed to mkdir {}: {}", path.display(), e)
+            })?;
+        info!(target: "sftp", "Directory created: {}", path.display());
+        Ok(())
     }
 
     /// Remove a directory (not exposed in remote UI per safety requirements)
     pub fn rmdir(&self, path: &Path) -> Result<()> {
+        info!(target: "sftp", "Removing directory: {}", path.display());
         self.sftp
             .rmdir(path)
-            .map_err(|e| anyhow!("Failed to rmdir {}: {}", path.display(), e))
+            .map_err(|e| {
+                warn!(target: "sftp", "Failed to remove directory {}: {}", path.display(), e);
+                anyhow!("Failed to rmdir {}: {}", path.display(), e)
+            })?;
+        info!(target: "sftp", "Directory removed: {}", path.display());
+        Ok(())
     }
 
-    /// Remove a file (not exposed in remote UI per safety requirements)  
+    /// Remove a file (not exposed in remote UI per safety requirements)
     pub fn unlink(&self, path: &Path) -> Result<()> {
+        info!(target: "sftp", "Removing file: {}", path.display());
         self.sftp
             .unlink(path)
-            .map_err(|e| anyhow!("Failed to unlink {}: {}", path.display(), e))
+            .map_err(|e| {
+                warn!(target: "sftp", "Failed to remove file {}: {}", path.display(), e);
+                anyhow!("Failed to unlink {}: {}", path.display(), e)
+            })?;
+        info!(target: "sftp", "File removed: {}", path.display());
+        Ok(())
     }
 
     /// Rename a file or directory
     pub fn rename(&self, src: &Path, dst: &Path) -> Result<()> {
+        info!(target: "sftp", "Renaming {} to {}", src.display(), dst.display());
         self.sftp.rename(src, dst, None).map_err(|e| {
+            warn!(target: "sftp", "Failed to rename {} to {}: {}", src.display(), dst.display(), e);
             anyhow!(
                 "Failed to rename {} to {}: {}",
                 src.display(),
                 dst.display(),
                 e
             )
-        })
+        })?;
+        info!(target: "sftp", "Renamed {} to {}", src.display(), dst.display());
+        Ok(())
     }
 
     /// Open a file for reading (for downloads)
