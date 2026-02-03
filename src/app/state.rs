@@ -3256,10 +3256,19 @@ impl App {
 
     /// Set clipboard text using multiple methods for reliability
     fn set_clipboard_text(&mut self, text: &str) -> bool {
-        // On Linux, try xclip/xsel first as they're more reliable
+        // On Linux, detect Wayland vs X11 and use appropriate tools
         #[cfg(target_os = "linux")]
         {
-            // Try xclip first (most common)
+            let is_wayland = std::env::var("WAYLAND_DISPLAY").is_ok();
+
+            if is_wayland {
+                // On Wayland, try wl-copy first
+                if Self::set_clipboard_via_command("wl-copy", &[], text) {
+                    return true;
+                }
+            }
+
+            // Try xclip (works on X11, may work on XWayland)
             if Self::set_clipboard_via_command("xclip", &["-selection", "clipboard"], text) {
                 // Also set primary selection for middle-click paste
                 let _ = Self::set_clipboard_via_command("xclip", &["-selection", "primary"], text);
@@ -3272,8 +3281,8 @@ impl App {
                 return true;
             }
 
-            // Try wl-copy for Wayland
-            if Self::set_clipboard_via_command("wl-copy", &[], text) {
+            // Try wl-copy as fallback (in case WAYLAND_DISPLAY wasn't set but we're on Wayland)
+            if !is_wayland && Self::set_clipboard_via_command("wl-copy", &[], text) {
                 return true;
             }
 
@@ -3342,35 +3351,96 @@ impl App {
         child.wait().map(|s| s.success()).unwrap_or(false)
     }
 
+    /// Get clipboard text via external command (Linux)
+    #[cfg(target_os = "linux")]
+    fn get_clipboard_via_command(cmd: &str, args: &[&str]) -> Option<String> {
+        use std::process::{Command, Stdio};
+
+        let output = Command::new(cmd)
+            .args(args)
+            .stdin(Stdio::null())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::null())
+            .output()
+            .ok()?;
+
+        if output.status.success() {
+            String::from_utf8(output.stdout).ok()
+        } else {
+            None
+        }
+    }
+
     /// Paste from clipboard to terminal
     async fn paste_from_clipboard(&mut self) {
         let mut text_to_paste = None;
         let mut error_msg = None;
 
-        // Try existing clipboard first
-        if let Some(clipboard) = &mut self.clipboard {
-            match clipboard.get_text() {
-                Ok(text) => text_to_paste = Some(text),
-                Err(_) => {
-                    // Ignore error, try creating new instance below
+        // On Linux, try command-line tools first for better Wayland support
+        #[cfg(target_os = "linux")]
+        {
+            let is_wayland = std::env::var("WAYLAND_DISPLAY").is_ok();
+
+            if is_wayland {
+                // On Wayland, try wl-paste first
+                if let Some(text) = Self::get_clipboard_via_command("wl-paste", &["-n"]) {
+                    text_to_paste = Some(text);
+                }
+            }
+
+            // Try xclip if not yet successful
+            if text_to_paste.is_none() {
+                if let Some(text) =
+                    Self::get_clipboard_via_command("xclip", &["-selection", "clipboard", "-o"])
+                {
+                    text_to_paste = Some(text);
+                }
+            }
+
+            // Try xsel as fallback
+            if text_to_paste.is_none() {
+                if let Some(text) =
+                    Self::get_clipboard_via_command("xsel", &["--clipboard", "--output"])
+                {
+                    text_to_paste = Some(text);
+                }
+            }
+
+            // Try wl-paste as fallback (in case WAYLAND_DISPLAY wasn't set)
+            if text_to_paste.is_none() && !is_wayland {
+                if let Some(text) = Self::get_clipboard_via_command("wl-paste", &["-n"]) {
+                    text_to_paste = Some(text);
                 }
             }
         }
 
-        // If not successful yet, create new instance
+        // Try arboard as fallback (or primary on non-Linux)
         if text_to_paste.is_none() {
-            match arboard::Clipboard::new() {
-                Ok(mut clipboard) => {
-                    match clipboard.get_text() {
-                        Ok(text) => {
-                            text_to_paste = Some(text);
-                            // Store this clipboard for future reuse
-                            self.clipboard = Some(clipboard);
-                        }
-                        Err(e) => error_msg = Some(format!("Paste failed: {}", e)),
+            // Try existing clipboard first
+            if let Some(clipboard) = &mut self.clipboard {
+                match clipboard.get_text() {
+                    Ok(text) => text_to_paste = Some(text),
+                    Err(_) => {
+                        // Ignore error, try creating new instance below
                     }
                 }
-                Err(e) => error_msg = Some(format!("Clipboard error: {}", e)),
+            }
+
+            // If not successful yet, create new instance
+            if text_to_paste.is_none() {
+                match arboard::Clipboard::new() {
+                    Ok(mut clipboard) => {
+                        match clipboard.get_text() {
+                            Ok(text) => {
+                                text_to_paste = Some(text);
+                                // Store this clipboard for future reuse
+                                self.clipboard = Some(clipboard);
+                            }
+                            Err(e) => error_msg = Some(format!("Paste failed: {}", e)),
+                        }
+                    }
+                    Err(e) => error_msg = Some(format!("Clipboard error: {}", e)),
+                }
             }
         }
 
