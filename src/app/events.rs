@@ -1,6 +1,7 @@
 //! Application event system
 
-use crossterm::event::{Event as CrosstermEvent, KeyEvent, MouseEvent};
+use crossterm::event::{Event as CrosstermEvent, EventStream, KeyEvent, MouseEvent};
+use futures::StreamExt;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
@@ -93,6 +94,9 @@ impl EventHandler {
 
         tokio::spawn(async move {
             let mut interval = tokio::time::interval(tick_rate);
+            // Use crossterm's async EventStream for proper escape sequence handling
+            let mut event_stream = EventStream::new();
+
             loop {
                 // Check if paused
                 if paused.load(Ordering::SeqCst) {
@@ -102,7 +106,16 @@ impl EventHandler {
 
                 let event = tokio::select! {
                     _ = interval.tick() => AppEvent::Tick,
-                    event = Self::read_crossterm_event(&paused) => event,
+                    event = event_stream.next() => {
+                        match event {
+                            Some(Ok(CrosstermEvent::Key(key))) => AppEvent::Key(key),
+                            Some(Ok(CrosstermEvent::Mouse(mouse))) => AppEvent::Mouse(mouse),
+                            Some(Ok(CrosstermEvent::Resize(w, h))) => AppEvent::Resize(w, h),
+                            Some(Ok(_)) => continue, // Ignore other events
+                            Some(Err(_)) => continue, // Ignore errors
+                            None => break, // Stream ended
+                        }
+                    }
                 };
 
                 // Don't send events while paused
@@ -115,27 +128,6 @@ impl EventHandler {
                 }
             }
         });
-    }
-
-    /// Read next crossterm event
-    async fn read_crossterm_event(paused: &Arc<AtomicBool>) -> AppEvent {
-        loop {
-            // Check if paused
-            if paused.load(Ordering::SeqCst) {
-                tokio::time::sleep(Duration::from_millis(50)).await;
-                continue;
-            }
-
-            if crossterm::event::poll(Duration::from_millis(10)).unwrap_or(false) {
-                match crossterm::event::read() {
-                    Ok(CrosstermEvent::Key(key)) => return AppEvent::Key(key),
-                    Ok(CrosstermEvent::Mouse(mouse)) => return AppEvent::Mouse(mouse),
-                    Ok(CrosstermEvent::Resize(w, h)) => return AppEvent::Resize(w, h),
-                    _ => {}
-                }
-            }
-            tokio::time::sleep(Duration::from_millis(10)).await;
-        }
     }
 
     /// Get next event

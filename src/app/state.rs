@@ -9,7 +9,7 @@ use crate::tui::highlight::Highlighter;
 use crate::tui::terminal_render::render_screen_to_lines_with_selection;
 use crate::tui::{Icons, Theme, Tui};
 use anyhow::Result;
-use crossterm::event::{KeyCode, KeyModifiers, MouseEvent, MouseEventKind};
+use crossterm::event::{KeyCode, KeyEventKind, KeyModifiers, MouseEvent, MouseEventKind};
 use std::collections::HashMap;
 use std::io::{Read, Write};
 use std::time::{Duration, Instant};
@@ -764,6 +764,20 @@ impl App {
     async fn handle_event(&mut self, event: AppEvent) -> Result<bool> {
         match event {
             AppEvent::Key(key) => {
+                // With DISAMBIGUATE_ESCAPE_CODES enabled, crossterm reports Press/Release/Repeat events.
+                // Only handle Press events to avoid duplicate processing and ensure immediate response.
+                if key.kind != KeyEventKind::Press {
+                    return Ok(false); // No redraw needed for release/repeat events
+                }
+
+                // Debug logging for Ctrl+Shift key combinations
+                if key.modifiers.contains(KeyModifiers::CONTROL) {
+                    info!(
+                        "Key event: code={:?}, modifiers={:?}, kind={:?}",
+                        key.code, key.modifiers, key.kind
+                    );
+                }
+
                 // Prioritize escape prefix handling (allows holding Ctrl or standard usage)
                 if self.view == View::Session && self.escape_prefix_active {
                     self.handle_key(key).await?;
@@ -779,10 +793,10 @@ impl App {
                         && matches!(key.code, KeyCode::Char('y') | KeyCode::Char('Y')))
                         || key.code == KeyCode::Char('Y');
 
-                    // Check for Paste: Ctrl+Shift+v/V (explicit shift) OR Ctrl+V (uppercase implies shift)
+                    // Check for Paste: Ctrl+Shift+i/I (explicit shift) OR Ctrl+I (uppercase implies shift)
                     let is_paste = (key.modifiers.contains(KeyModifiers::SHIFT)
-                        && matches!(key.code, KeyCode::Char('p') | KeyCode::Char('P')))
-                        || key.code == KeyCode::Char('P');
+                        && matches!(key.code, KeyCode::Char('i') | KeyCode::Char('I')))
+                        || key.code == KeyCode::Char('I');
 
                     if is_copy {
                         // Copy selected text to clipboard
@@ -796,18 +810,6 @@ impl App {
                     }
                 }
 
-                // Handle Ctrl+Shift+F for find (in session view)
-                if self.view == View::Session
-                    && key.modifiers.contains(KeyModifiers::CONTROL)
-                    && key.modifiers.contains(KeyModifiers::SHIFT)
-                    && matches!(key.code, KeyCode::Char('f') | KeyCode::Char('F'))
-                {
-                    self.find_overlay_visible = true;
-                    self.find_query.clear();
-                    self.find_matches.clear();
-                    self.find_match_index = 0;
-                    return Ok(true);
-                }
 
                 // Handle find overlay input
                 if self.view == View::Session && self.find_overlay_visible {
@@ -2326,6 +2328,14 @@ impl App {
                 // w - Close current session
                 KeyCode::Char('w') | KeyCode::Char('W') => {
                     self.close_current_session().await;
+                    return Ok(());
+                }
+                // f - Find in session
+                KeyCode::Char('f') | KeyCode::Char('F') => {
+                    self.find_overlay_visible = true;
+                    self.find_query.clear();
+                    self.find_matches.clear();
+                    self.find_match_index = 0;
                     return Ok(());
                 }
                 // Any other key: forward to host (prefix was accidental)

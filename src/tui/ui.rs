@@ -109,7 +109,7 @@ fn render_status_bar(frame: &mut Frame, app: &App, area: Rect) {
         View::Connections => {
             "󰌑 Enter:Connect  e:Edit  n:New  d:Delete  t:Tunnels  f:SFTP  k:Keys  ?:Help"
         }
-        View::Session => "󰌑 Shift+Esc:Back  Ctrl+C:Disconnect",
+        View::Session => "󰌑 C-S-Y:Copy  C-S-I:Paste  Ctrl+B:Prefix(f:Find)",
         View::Sftp => "󰌑 Tab:Switch  Enter:Open  Backspace:Parent  c:Copy  m:Move  d:Delete  Esc:Back  q:Exit",
         View::Tunnels => "󰌑 Enter:Toggle  n:New  d:Delete  Esc:Back",
         View::Keys => "󰌑 Enter:View  n:Generate  i:Import  d:Delete  Esc:Back",
@@ -181,9 +181,9 @@ fn render_status_bar_state(frame: &mut Frame, state: &RenderState, area: Rect) {
         ),
         View::Session => {
             if state.escape_prefix_active {
-                format!("{}Ctrl+B: n:Next p:Prev l:List c:Connect w:Close", kb)
+                format!("{}Ctrl+B: n:Next p:Prev l:List c:Connect w:Close f:Find", kb)
             } else {
-                format!("{}Ctrl+B:Prefix  Alt+Left:Back  Alt+f:SFTP", kb)
+                format!("{}C-S-Y:Copy  C-S-I:Paste  Ctrl+B:Prefix(f:Find)  Alt+f:SFTP", kb)
             }
         }
         View::Sftp => format!(
