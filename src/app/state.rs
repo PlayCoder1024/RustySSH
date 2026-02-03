@@ -2123,7 +2123,8 @@ impl App {
         // Note: ssh2 blocking is controlled at Session level
         // We'll use short reads with timeout
 
-        let mut buf = [0u8; 4096];
+        // usage 16KB buffer for better throughput
+        let mut buf = [0u8; 16384];
 
         loop {
             // Check if channel is closed
@@ -2135,12 +2136,15 @@ impl App {
                 break;
             }
 
+            let mut did_work = false;
+
             // Read available data
             match channel.read(&mut buf) {
                 Ok(0) => {
                     // No data available, check for input
                 }
                 Ok(n) => {
+                    did_work = true;
                     let data = buf[..n].to_vec();
                     if event_sender
                         .send(AppEvent::SshData { session_id, data })
@@ -2161,24 +2165,39 @@ impl App {
                 }
             }
 
-            // Check for input to send
-            match input_rx.try_recv() {
-                Ok(data) => {
-                    if let Err(e) = channel.write_all(&data) {
-                        let _ = event_sender.send(AppEvent::SshDisconnected {
-                            session_id,
-                            reason: format!("Write error: {}", e),
-                        });
-                        break;
+            // Check for input to send - drain the queue
+            let mut inputs_processed = 0;
+            loop {
+                match input_rx.try_recv() {
+                    Ok(data) => {
+                        did_work = true;
+                        if let Err(e) = channel.write_all(&data) {
+                            let _ = event_sender.send(AppEvent::SshDisconnected {
+                                session_id,
+                                reason: format!("Write error: {}", e),
+                            });
+                            return;
+                        }
+                        inputs_processed += 1;
+                        // Don't starve reads if we have massive input (though unlikely for manual input)
+                        if inputs_processed > 100 {
+                            break;
+                        }
                     }
-                    let _ = channel.flush();
+                    Err(mpsc::error::TryRecvError::Empty) => break,
+                    Err(mpsc::error::TryRecvError::Disconnected) => return,
                 }
-                Err(mpsc::error::TryRecvError::Empty) => {}
-                Err(mpsc::error::TryRecvError::Disconnected) => break,
             }
 
-            // Small sleep to prevent busy loop
-            std::thread::sleep(Duration::from_millis(10));
+            if inputs_processed > 0 {
+                let _ = channel.flush();
+            }
+
+            // Small sleep ONLY if no work was done to prevent busy loop
+            // If we did work, we continue immediately to process more data
+            if !did_work {
+                std::thread::sleep(Duration::from_millis(5));
+            }
         }
 
         let _ = channel.close();
@@ -3192,7 +3211,17 @@ impl App {
                 }
             }
             KeyCode::Enter => vec![b'\r'],
-            KeyCode::Backspace => vec![0x7f],
+            KeyCode::Backspace => {
+            if key.modifiers.contains(KeyModifiers::ALT) {
+                // Alt+Backspace = Esc + Backspace (delete word)
+                vec![0x1b, 0x7f]
+            } else if key.modifiers.contains(KeyModifiers::CONTROL) {
+                // Ctrl+Backspace = Ctrl+W (delete word backward)
+                vec![0x17]
+            } else {
+                vec![0x7f]
+            }
+        },
             KeyCode::Tab => vec![b'\t'],
             KeyCode::Esc => vec![0x1b],
             KeyCode::Up => vec![0x1b, b'[', b'A'],
