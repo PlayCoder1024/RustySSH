@@ -151,56 +151,15 @@ fn render_about_settings(frame: &mut Frame, state: &RenderState, area: Rect) {
         Rect::new(area.x, area.y, area.width, 1),
     );
 
-    let ascii_art = vec![
-        "_______________________________________",
-        "      /      ___________________________      \\",
-        "     /      /                           \\      \\",
-        "    /      /    >_  RUNNING: PlayCoder   \\      \\",
-        "   /      /    -----------------------    \\      \\",
-        "  |      |     while(alive) {          |      |",
-        "  |      |        code();              |      |",
-        "  |      |        play();              |      |",
-        "  |      |     }                       |      |",
-        "  |      |     [################] 100% |      |",
-        "   \\      \\_____________________________/      /",
-        "    \\                                         /",
-        "     \\        __                __           /",
-        "      \\      |  |              (  ) (  )    /",
-        "       \\   __|  |__           (  ) (  )    / ",
-        "        \\ |__    __|           (  ) (  )  /",
-        "         \\   |  |                --      /",
-        "          \\  |__|           SELECT START/",
-        "           \\___________________________/",
-        "                ||               ||",
-        "             ___||_______________||___",
-        "            |                         |",
-        "            |   L E V E L  :  E X P   |",
-        "            |_________________________|",
-    ];
-
     let email = "bGl1amlhbnlvdXNoZW5nQGhvdG1haWwuY29tCg==";
 
-    // Render ASCII art
-    let mut y = area.y + 2;
-    for line in ascii_art {
-        frame.render_widget(
-            Paragraph::new(Line::from(Span::styled(
-                line,
-                Style::default().fg(theme.accent_info()),
-            ))),
-            Rect::new(area.x, y, area.width, 1),
-        );
-        y += 1;
-    }
-
     // Render email below ASCII art
-    y += 1;
     frame.render_widget(
         Paragraph::new(Line::from(vec![
             Span::styled("Contact me: ", theme.text_dim()),
             Span::styled(email, Style::default().fg(theme.accent_success())),
         ])),
-        Rect::new(area.x, y, area.width, 1),
+        Rect::new(area.x, area.y + 1, area.width, 1),
     );
 }
 

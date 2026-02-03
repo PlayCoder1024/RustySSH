@@ -442,10 +442,10 @@ impl App {
             // Default to connections if no history and we are in a sub-view
             // But if we are already essentially at root (Connections), do nothing or handled by UI
             if self.view != View::Connections && self.view_back_history.is_empty() {
-                 // Check if we just want to go back to "home" equivalent
-                 // For now, let's just make sure we don't get stuck if history is empty but we aren't in connections view
-                 // self.view = View::Connections; 
-                 // Actually the request implies a stack. If stack is empty, we stay.
+                // Check if we just want to go back to "home" equivalent
+                // For now, let's just make sure we don't get stuck if history is empty but we aren't in connections view
+                // self.view = View::Connections;
+                // Actually the request implies a stack. If stack is empty, we stay.
             }
         }
     }
@@ -458,13 +458,9 @@ impl App {
         }
     }
 
-
-
-
     /// Process pending transfers
     /// Process pending transfers
     pub fn process_transfers(&mut self) {
-
         // Start new transfers
         let items = self.transfer_queue.process_pending();
         for item in items {
@@ -475,9 +471,13 @@ impl App {
     /// Spawn a transfer task
     fn spawn_transfer(&mut self, item: crate::sftp::TransferItem) {
         let host_id = item.host_id;
-        
+
         // Retrieve host config and password BEFORE borrowing transfer_workers mutably
-        let host_config_opt = self.all_hosts().iter().find(|h| h.id == host_id).map(|h| (*h).clone());
+        let host_config_opt = self
+            .all_hosts()
+            .iter()
+            .find(|h| h.id == host_id)
+            .map(|h| (*h).clone());
         let effective_password = if host_config_opt.is_some() {
             let password = self.credentials.get_password(host_id).ok().flatten();
             let session_pwd = self.session_passwords.get(&host_id).cloned();
@@ -488,40 +488,36 @@ impl App {
 
         // Check if we have a worker for this host
         if let std::collections::hash_map::Entry::Vacant(e) = self.transfer_workers.entry(host_id) {
-            
             if let Some(host) = host_config_opt {
                 // Need to spawn a new worker
                 let (tx, rx) = mpsc::unbounded_channel();
                 let progress_tx = self.transfer_queue.progress_sender();
-                
-                let host_clone = host.clone(); 
+
+                let host_clone = host.clone();
                 let pwd = effective_password.clone();
 
                 // Spawn the worker thread
                 std::thread::spawn(move || {
-                     crate::sftp::transfer::run_transfer_worker(
-                        host_clone,
-                        pwd,
-                        rx,
-                        progress_tx
-                     );
+                    crate::sftp::transfer::run_transfer_worker(host_clone, pwd, rx, progress_tx);
                 });
-                
+
                 e.insert(tx);
             } else {
                 // Host not found? Fail the transfer
-                self.transfer_queue.complete(item.id, Some("Host not found".to_string()));
+                self.transfer_queue
+                    .complete(item.id, Some("Host not found".to_string()));
                 return;
             }
         }
-        
+
         // Send item to worker
         if let Some(tx) = self.transfer_workers.get(&host_id) {
             if let Err(_e) = tx.send(item.clone()) {
                 // Worker died?
                 self.transfer_workers.remove(&host_id);
                 // Retry? Or fail? Fail for now.
-                self.transfer_queue.complete(item.id, Some("Transfer worker died".to_string()));
+                self.transfer_queue
+                    .complete(item.id, Some("Transfer worker died".to_string()));
             }
         }
     }
@@ -535,188 +531,202 @@ impl App {
 
         while self.state != AppState::Quit {
             // Initial scan of keys
-            if self.ssh_keys_last_scan.elapsed() > Duration::from_secs(60) || self.key_manager.list_keys().is_empty() {
-                 let _ = self.key_manager.scan_keys();
-                 self.ssh_keys_last_scan = std::time::Instant::now();
+            if self.ssh_keys_last_scan.elapsed() > Duration::from_secs(60)
+                || self.key_manager.list_keys().is_empty()
+            {
+                let _ = self.key_manager.scan_keys();
+                self.ssh_keys_last_scan = std::time::Instant::now();
             }
 
             if should_redraw {
                 // Create render state to avoid borrow conflict
                 let render_state = RenderState {
-                view: self.view,
-                theme: self.theme.clone(),
-                icons: self.icons.clone(),
-                config: self.config.clone(),
-                sessions: {
-                    self.sessions
-                        .list()
-                        .iter()
-                        .map(|s| {
-                            let is_active = Some(s.id) == self.active_session;
-                            let styled_lines = if is_active {
-                                let selection = s.get_selection_for_render();
-                                let raw_lines =
-                                    render_screen_to_lines_with_selection(s.screen(), selection);
-                                raw_lines
-                                    .into_iter()
-                                    .map(|line| self.highlighter.highlight_styled_line(line))
-                                    .collect()
-                            } else {
-                                Vec::new()
-                            };
-
-                            SessionInfo {
-                                id: s.id,
-                                name: s.name.clone(),
-                                styled_lines,
-                                cursor_position: s.cursor_position(),
-                                cursor_visible: s.cursor_visible(),
-                                selection: if is_active {
-                                    s.get_selection_for_render()
+                    view: self.view,
+                    theme: self.theme.clone(),
+                    icons: self.icons.clone(),
+                    config: self.config.clone(),
+                    sessions: {
+                        self.sessions
+                            .list()
+                            .iter()
+                            .map(|s| {
+                                let is_active = Some(s.id) == self.active_session;
+                                let styled_lines = if is_active {
+                                    let selection = s.get_selection_for_render();
+                                    let raw_lines = render_screen_to_lines_with_selection(
+                                        s.screen(),
+                                        selection,
+                                    );
+                                    raw_lines
+                                        .into_iter()
+                                        .map(|line| self.highlighter.highlight_styled_line(line))
+                                        .collect()
                                 } else {
-                                    None
-                                },
-                            }
-                        })
-                        .collect()
-                },
-                active_session: self.active_session,
-                status_message: self.status_message.clone(),
-                selected_host_index: self.selected_host_index,
-                host_count: self.all_hosts().len(),
-                file_browser: self.file_browser.as_ref().map(|browser| {
-                    use crate::sftp::PaneSide;
-                    FileBrowserSnapshot {
-                        left: FilePaneSnapshot {
-                            path: browser.left.path.display().to_string(),
-                            entries: browser
-                                .left
-                                .filtered_entries()
-                                .iter()
-                                .map(|e| FileEntrySnapshot {
-                                    name: e.name.clone(),
-                                    is_dir: e.is_dir,
-                                    size_display: e.size_display(),
-                                    selected: e.selected,
-                                })
-                                .collect(),
-                            cursor: browser.left.cursor,
-                            is_remote: browser.left.is_remote,
-                        },
-                        right: FilePaneSnapshot {
-                            path: browser.right.path.display().to_string(),
-                            entries: browser
-                                .right
-                                .filtered_entries()
-                                .iter()
-                                .map(|e| FileEntrySnapshot {
-                                    name: e.name.clone(),
-                                    is_dir: e.is_dir,
-                                    size_display: e.size_display(),
-                                    selected: e.selected,
-                                })
-                                .collect(),
-                            cursor: browser.right.cursor,
-                            is_remote: browser.right.is_remote,
-                        },
-                        active_is_left: browser.active == PaneSide::Left,
-                    }
-                }),
-                transfer_info: TransferQueueSnapshot {
-                    pending_count: self.transfer_queue.pending().len(),
-                    active_count: self.transfer_queue.active().len(),
-                    active_transfers: self
-                        .transfer_queue
-                        .active()
+                                    Vec::new()
+                                };
+
+                                SessionInfo {
+                                    id: s.id,
+                                    name: s.name.clone(),
+                                    styled_lines,
+                                    cursor_position: s.cursor_position(),
+                                    cursor_visible: s.cursor_visible(),
+                                    selection: if is_active {
+                                        s.get_selection_for_render()
+                                    } else {
+                                        None
+                                    },
+                                }
+                            })
+                            .collect()
+                    },
+                    active_session: self.active_session,
+                    status_message: self.status_message.clone(),
+                    selected_host_index: self.selected_host_index,
+                    host_count: self.all_hosts().len(),
+                    file_browser: self.file_browser.as_ref().map(|browser| {
+                        use crate::sftp::PaneSide;
+                        FileBrowserSnapshot {
+                            left: FilePaneSnapshot {
+                                path: browser.left.path.display().to_string(),
+                                entries: browser
+                                    .left
+                                    .filtered_entries()
+                                    .iter()
+                                    .map(|e| FileEntrySnapshot {
+                                        name: e.name.clone(),
+                                        is_dir: e.is_dir,
+                                        size_display: e.size_display(),
+                                        selected: e.selected,
+                                    })
+                                    .collect(),
+                                cursor: browser.left.cursor,
+                                is_remote: browser.left.is_remote,
+                            },
+                            right: FilePaneSnapshot {
+                                path: browser.right.path.display().to_string(),
+                                entries: browser
+                                    .right
+                                    .filtered_entries()
+                                    .iter()
+                                    .map(|e| FileEntrySnapshot {
+                                        name: e.name.clone(),
+                                        is_dir: e.is_dir,
+                                        size_display: e.size_display(),
+                                        selected: e.selected,
+                                    })
+                                    .collect(),
+                                cursor: browser.right.cursor,
+                                is_remote: browser.right.is_remote,
+                            },
+                            active_is_left: browser.active == PaneSide::Left,
+                        }
+                    }),
+                    transfer_info: TransferQueueSnapshot {
+                        pending_count: self.transfer_queue.pending().len(),
+                        active_count: self.transfer_queue.active().len(),
+                        active_transfers: self
+                            .transfer_queue
+                            .active()
+                            .iter()
+                            .map(|t| {
+                                use crate::sftp::TransferDirection;
+                                TransferItemSnapshot {
+                                    filename: t
+                                        .source
+                                        .file_name()
+                                        .map(|n| n.to_string_lossy().to_string())
+                                        .unwrap_or_default(),
+                                    progress: t.progress(),
+                                    speed_display: t.speed_display(),
+                                    eta_display: t.eta_display(),
+                                    is_upload: t.direction == TransferDirection::Upload,
+                                }
+                            })
+                            .collect(),
+                    },
+                    session_order: self.session_order.clone(),
+                    session_list_visible: self.session_list_visible,
+                    session_list_selected: self.session_list_selected,
+                    show_connection_overlay: self.show_connection_overlay,
+                    escape_prefix_active: self.escape_prefix_active,
+                    connecting_to_host: self.connecting_to_host.clone(),
+                    connection_start_time: self.connection_start_time,
+                    find_overlay_visible: self.find_overlay_visible,
+                    find_query: self.find_query.clone(),
+                    find_match_index: self.find_match_index,
+                    find_match_count: self.find_matches.len(),
+                    host_search_visible: self.host_search_visible,
+                    host_search_query: self.host_search_query.clone(),
+                    host_search_results: self.host_search_results.clone(),
+                    host_search_selected: self.host_search_selected,
+                    settings_category: self.settings_category,
+                    settings_item: self.settings_item,
+                    settings_dropdown_open: self.settings_dropdown_open,
+                    can_go_back: !self.view_back_history.is_empty(),
+                    can_go_forward: !self.view_forward_history.is_empty(),
+                    highlighter: self.highlighter.clone(),
+                    detail_view_focused: self.detail_view_focused,
+                    detail_view_item_index: self.detail_view_item_index,
+                    editing_detail: self.editing_detail,
+                    temp_edit_buffer: self.temp_edit_buffer.clone(),
+                    ssh_keys: self
+                        .key_manager
+                        .list_keys()
                         .iter()
-                        .map(|t| {
-                            use crate::sftp::TransferDirection;
-                            TransferItemSnapshot {
-                                filename: t
-                                    .source
-                                    .file_name()
-                                    .map(|n| n.to_string_lossy().to_string())
-                                    .unwrap_or_default(),
-                                progress: t.progress(),
-                                speed_display: t.speed_display(),
-                                eta_display: t.eta_display(),
-                                is_upload: t.direction == TransferDirection::Upload,
-                            }
+                        .map(|k| KeyInfoSnapshot {
+                            name: k
+                                .path
+                                .file_name()
+                                .unwrap_or_default()
+                                .to_string_lossy()
+                                .to_string(),
+                            key_type: k.key_type.clone(),
+                            fingerprint: k.fingerprint.clone(),
+                            comment: k.comment.clone(),
+                            encrypted: k.encrypted,
+                            path: k.path.to_string_lossy().to_string(),
                         })
                         .collect(),
-                },
-                session_order: self.session_order.clone(),
-                session_list_visible: self.session_list_visible,
-                session_list_selected: self.session_list_selected,
-                show_connection_overlay: self.show_connection_overlay,
-                escape_prefix_active: self.escape_prefix_active,
-                connecting_to_host: self.connecting_to_host.clone(),
-                connection_start_time: self.connection_start_time,
-                find_overlay_visible: self.find_overlay_visible,
-                find_query: self.find_query.clone(),
-                find_match_index: self.find_match_index,
-                find_match_count: self.find_matches.len(),
-                host_search_visible: self.host_search_visible,
-                host_search_query: self.host_search_query.clone(),
-                host_search_results: self.host_search_results.clone(),
-                host_search_selected: self.host_search_selected,
-                settings_category: self.settings_category,
-                settings_item: self.settings_item,
-                settings_dropdown_open: self.settings_dropdown_open,
-                can_go_back: !self.view_back_history.is_empty(),
-                can_go_forward: !self.view_forward_history.is_empty(),
-                highlighter: self.highlighter.clone(),
-                detail_view_focused: self.detail_view_focused,
-                detail_view_item_index: self.detail_view_item_index,
-                editing_detail: self.editing_detail,
-                temp_edit_buffer: self.temp_edit_buffer.clone(),
-                ssh_keys: self.key_manager.list_keys().iter().map(|k| KeyInfoSnapshot {
-                    name: k.path.file_name().unwrap_or_default().to_string_lossy().to_string(),
-                    key_type: k.key_type.clone(),
-                    fingerprint: k.fingerprint.clone(),
-                    comment: k.comment.clone(),
-                    encrypted: k.encrypted,
-                    path: k.path.to_string_lossy().to_string(),
-                }).collect(),
-            };
-
-            // Render UI
-            self.tui.draw(|frame| {
-                crate::tui::ui::render_with_state(frame, &render_state);
-            })?;
-
-            // Compute terminal area for mouse coordinate conversion
-            // This mirrors the layout logic in render_with_state
-            if self.view == View::Session {
-                let size = self.tui.size()?;
-                let chunks = ratatui::layout::Layout::default()
-                    .direction(ratatui::layout::Direction::Vertical)
-                    .constraints([
-                        ratatui::layout::Constraint::Min(3),    // Main content
-                        ratatui::layout::Constraint::Length(1), // Status bar
-                    ])
-                    .split(size);
-
-                // Session view layout: tabs + terminal
-                let session_chunks = ratatui::layout::Layout::default()
-                    .direction(ratatui::layout::Direction::Vertical)
-                    .constraints([
-                        ratatui::layout::Constraint::Length(2), // Tabs
-                        ratatui::layout::Constraint::Min(1),    // Terminal
-                    ])
-                    .split(chunks[0]);
-
-                // Terminal block inner area (accounting for borders)
-                let terminal_inner = ratatui::layout::Rect {
-                    x: session_chunks[1].x + 1,
-                    y: session_chunks[1].y + 1,
-                    width: session_chunks[1].width.saturating_sub(2),
-                    height: session_chunks[1].height.saturating_sub(2),
                 };
-                self.terminal_area = Some(terminal_inner);
-            } else {
-                self.terminal_area = None;
-            }
+
+                // Render UI
+                self.tui.draw(|frame| {
+                    crate::tui::ui::render_with_state(frame, &render_state);
+                })?;
+
+                // Compute terminal area for mouse coordinate conversion
+                // This mirrors the layout logic in render_with_state
+                if self.view == View::Session {
+                    let size = self.tui.size()?;
+                    let chunks = ratatui::layout::Layout::default()
+                        .direction(ratatui::layout::Direction::Vertical)
+                        .constraints([
+                            ratatui::layout::Constraint::Min(3),    // Main content
+                            ratatui::layout::Constraint::Length(1), // Status bar
+                        ])
+                        .split(size);
+
+                    // Session view layout: tabs + terminal
+                    let session_chunks = ratatui::layout::Layout::default()
+                        .direction(ratatui::layout::Direction::Vertical)
+                        .constraints([
+                            ratatui::layout::Constraint::Length(2), // Tabs
+                            ratatui::layout::Constraint::Min(1),    // Terminal
+                        ])
+                        .split(chunks[0]);
+
+                    // Terminal block inner area (accounting for borders)
+                    let terminal_inner = ratatui::layout::Rect {
+                        x: session_chunks[1].x + 1,
+                        y: session_chunks[1].y + 1,
+                        width: session_chunks[1].width.saturating_sub(2),
+                        height: session_chunks[1].height.saturating_sub(2),
+                    };
+                    self.terminal_area = Some(terminal_inner);
+                } else {
+                    self.terminal_area = None;
+                }
                 should_redraw = false;
             }
 
@@ -760,31 +770,18 @@ impl App {
                 }
 
                 // Handle Ctrl+Shift combinations (copy/paste in session)
+                // Only Ctrl+Shift+C/V are supported to avoid conflict with terminal interrupt (Ctrl+C)
+                // Note: Some terminals report Ctrl+Shift+C as uppercase 'C' with only CONTROL modifier
                 if self.view == View::Session && key.modifiers.contains(KeyModifiers::CONTROL) {
-                    // Check if there is an active selection
-                    let has_selection = if let Some(session_id) = self.active_session {
-                        if let Some(session) = self.sessions.get(session_id) {
-                            session.has_selection()
-                        } else {
-                            false
-                        }
-                    } else {
-                        false
-                    };
-
-                    // Check for Copy:
-                    // 1. Ctrl+Shift+c/C
-                    // 2. Ctrl+C (uppercase implies shift)
-                    // 3. Ctrl+c (lowercase) IF selection is active (Smart Copy)
+                    // Check for Copy: Ctrl+Shift+c/C (explicit shift) OR Ctrl+C (uppercase implies shift)
                     let is_copy = (key.modifiers.contains(KeyModifiers::SHIFT)
                         && matches!(key.code, KeyCode::Char('c') | KeyCode::Char('C')))
-                        || (key.code == KeyCode::Char('C'))
-                        || (has_selection && key.code == KeyCode::Char('c'));
+                        || key.code == KeyCode::Char('C');
 
-                    // Check for Paste: Ctrl+Shift+v/V OR Ctrl+V (uppercase implies shift)
+                    // Check for Paste: Ctrl+Shift+v/V (explicit shift) OR Ctrl+V (uppercase implies shift)
                     let is_paste = (key.modifiers.contains(KeyModifiers::SHIFT)
                         && matches!(key.code, KeyCode::Char('v') | KeyCode::Char('V')))
-                        || (key.code == KeyCode::Char('V'));
+                        || key.code == KeyCode::Char('V');
 
                     if is_copy {
                         // Copy selected text to clipboard
@@ -922,12 +919,12 @@ impl App {
             }
             AppEvent::Tick => {
                 let mut needs_redraw = false;
-                
+
                 // Show spinner if connecting
                 if self.connecting_to_host.is_some() {
                     needs_redraw = true;
                 }
-                
+
                 // Poll pending connection if any
                 if let Some(handle) = &mut self.pending_connection {
                     if handle.is_finished() {
@@ -964,36 +961,44 @@ impl App {
                         needs_redraw = true;
                     }
                 }
-                
+
                 Ok(needs_redraw)
             }
             // SFTP progress
             AppEvent::SftpProgress(progress) => {
                 // Update queue
                 self.transfer_queue.update_progress(progress.clone());
-                
+
                 // If this transfer completed or failed, we might want to refresh the view
                 // We can check if it's done by looking at the progress status/error
                 // Or better, check the queue after update.
                 let id = progress.id;
                 // Check if it was just moved to history (completed/failed)
                 // Accessing history:
-                let completed = self.transfer_queue.completed().iter().find(|t| t.id == id).is_some();
-                
+                let completed = self
+                    .transfer_queue
+                    .completed()
+                    .iter()
+                    .find(|t| t.id == id)
+                    .is_some();
+
                 if completed {
-                     // Trigger refresh of file browser if visible
-                     if let Some(browser) = &mut self.file_browser {
-                        // We assume upload/download based on something... 
+                    // Trigger refresh of file browser if visible
+                    if let Some(browser) = &mut self.file_browser {
+                        // We assume upload/download based on something...
                         // Actually we don't know easily which pane without looking up the item.
                         // But we can just refresh both or active/inactive?
                         // Let's refresh both to be safe and simple.
                         let _ = browser.left.load_local().await;
-                        if let Some(sftp) = self.active_sftp_host.and_then(|h| self.sftp_sessions.get_by_host(h)) {
+                        if let Some(sftp) = self
+                            .active_sftp_host
+                            .and_then(|h| self.sftp_sessions.get_by_host(h))
+                        {
                             let _ = browser.right.load_remote(sftp);
                         }
-                     }
+                    }
                 }
-                
+
                 Ok(true) // Start redraw
             }
             AppEvent::ConnectionResult {
@@ -1052,8 +1057,11 @@ impl App {
 
                             // Check for double/triple click
                             let now = std::time::Instant::now();
-                            let is_consecutive = if let (Some(last_time), Some(last_pos)) = (self.last_click_time, self.last_click_pos) {
-                                now.duration_since(last_time) < std::time::Duration::from_millis(500)
+                            let is_consecutive = if let (Some(last_time), Some(last_pos)) =
+                                (self.last_click_time, self.last_click_pos)
+                            {
+                                now.duration_since(last_time)
+                                    < std::time::Duration::from_millis(500)
                                     && last_pos == (term_row, term_col)
                             } else {
                                 false
@@ -1211,7 +1219,7 @@ impl App {
                     self.detail_view_focused = true;
                     // Reset if out of bounds (current fields = 6)
                     if self.detail_view_item_index >= 6 {
-                         self.detail_view_item_index = 0;
+                        self.detail_view_item_index = 0;
                     }
                 }
             }
@@ -2075,12 +2083,8 @@ impl App {
                     ProxyConnection::Direct
                 };
 
-                let connection = SshConnection::connect_via_proxy(
-                    chain_host.clone(),
-                    proxy,
-                    password,
-                    None,
-                )?;
+                let connection =
+                    SshConnection::connect_via_proxy(chain_host.clone(), proxy, password, None)?;
 
                 if is_last {
                     // Open SFTP
@@ -2596,7 +2600,7 @@ impl App {
                     self.sftp_sessions.remove_by_host(host_id);
                     self.active_sftp_host = None;
                     self.status_message = Some("SFTP connection closed".to_string());
-                    
+
                     // Remove all SFTP entries from history to prevent navigating back to a closed session
                     self.view_back_history.retain(|&v| v != View::Sftp);
                     self.view_forward_history.retain(|&v| v != View::Sftp);
@@ -2767,24 +2771,18 @@ impl App {
             let dest = dest_path.join(&filename);
 
             // Create transfer item
-            let item = crate::sftp::TransferItem::new(
-                source,
-                dest,
-                direction,
-                size,
-                host_id,
-            );
+            let item = crate::sftp::TransferItem::new(source, dest, direction, size, host_id);
 
             // Add to queue
             self.transfer_queue.add(item);
             added_count += 1;
         }
-        
+
         // Trigger processing immediately
         self.process_transfers();
 
         self.status_message = Some(format!("Queued {} files for transfer", added_count));
-        
+
         // Reload directory to show new files (eventually) - but this might be premature.
         // We probably want to auto-refresh when transfer completes.
         Ok(())
@@ -2866,7 +2864,8 @@ impl App {
         // Number of categories and items per category
         const CATEGORIES: &[&str] = &["Appearance", "SSH", "Keys", "Logging", "Keymap", "About"];
         // Items per category: [Appearance, SSH, Keys(dynamic), Logging, Keymap, About]
-        let items_per_category: Vec<usize> = vec![5, 3, self.key_manager.list_keys().len().max(1), 2, 0, 0];
+        let items_per_category: Vec<usize> =
+            vec![5, 3, self.key_manager.list_keys().len().max(1), 2, 0, 0];
 
         // If dropdown is open, handle dropdown navigation
         if self.settings_dropdown_open {
@@ -3050,57 +3049,68 @@ impl App {
             }
             KeyCode::Char('n') => {
                 if self.settings_category == 2 {
-                     // Generate new key
-                     // For now, auto-generate ED25519
-                     let mut path = self.key_manager.ssh_dir().to_path_buf();
-                     let name = format!("id_ed25519_{}", chrono::Utc::now().timestamp());
-                     path.push(&name);
-                     
-                     match self.key_manager.generate_ed25519(&path, &format!("{}@rustyssh", whoami::username()), None) {
-                         Ok(_) => {
-                             self.status_message = Some(format!("Generated {}", name));
-                             let _ = self.refresh_keys();
-                         }
-                         Err(e) => {
-                             self.status_message = Some(format!("Error: {}", e));
-                         }
-                     }
+                    // Generate new key
+                    // For now, auto-generate ED25519
+                    let mut path = self.key_manager.ssh_dir().to_path_buf();
+                    let name = format!("id_ed25519_{}", chrono::Utc::now().timestamp());
+                    path.push(&name);
+
+                    match self.key_manager.generate_ed25519(
+                        &path,
+                        &format!("{}@rustyssh", whoami::username()),
+                        None,
+                    ) {
+                        Ok(_) => {
+                            self.status_message = Some(format!("Generated {}", name));
+                            let _ = self.refresh_keys();
+                        }
+                        Err(e) => {
+                            self.status_message = Some(format!("Error: {}", e));
+                        }
+                    }
                 }
             }
             KeyCode::Char('d') => {
                 if self.settings_category == 2 {
-                     // Delete selected key
-                     // Clone needed data to avoid immutable borrow during deletion
-                     let key_data = {
-                         let keys = self.key_manager.list_keys();
-                         if !keys.is_empty() && self.settings_item < keys.len() {
-                             let key = keys[self.settings_item];
-                             Some((key.path.clone(), key.path.file_name().unwrap_or_default().to_string_lossy().to_string()))
-                         } else {
-                             None
-                         }
-                     };
+                    // Delete selected key
+                    // Clone needed data to avoid immutable borrow during deletion
+                    let key_data = {
+                        let keys = self.key_manager.list_keys();
+                        if !keys.is_empty() && self.settings_item < keys.len() {
+                            let key = keys[self.settings_item];
+                            Some((
+                                key.path.clone(),
+                                key.path
+                                    .file_name()
+                                    .unwrap_or_default()
+                                    .to_string_lossy()
+                                    .to_string(),
+                            ))
+                        } else {
+                            None
+                        }
+                    };
 
-                     if let Some((path, name)) = key_data {
-                         match self.key_manager.delete_key(&path) {
-                              Ok(_) => {
-                                 self.status_message = Some(format!("Deleted {}", name));
-                                 let _ = self.refresh_keys();
-                                 if self.settings_item > 0 {
-                                     self.settings_item -= 1;
-                                 }
-                             }
-                             Err(e) => {
-                                 self.status_message = Some(format!("Error: {}", e));
-                             }
-                         }
-                     }
+                    if let Some((path, name)) = key_data {
+                        match self.key_manager.delete_key(&path) {
+                            Ok(_) => {
+                                self.status_message = Some(format!("Deleted {}", name));
+                                let _ = self.refresh_keys();
+                                if self.settings_item > 0 {
+                                    self.settings_item -= 1;
+                                }
+                            }
+                            Err(e) => {
+                                self.status_message = Some(format!("Error: {}", e));
+                            }
+                        }
+                    }
                 }
             }
             KeyCode::Char('r') => {
                 if self.settings_category == 2 {
-                     let _ = self.refresh_keys();
-                     self.status_message = Some("Refreshed".to_string());
+                    let _ = self.refresh_keys();
+                    self.status_message = Some("Refreshed".to_string());
                 }
             }
             _ => {}
@@ -3247,16 +3257,16 @@ impl App {
             }
             KeyCode::Enter => vec![b'\r'],
             KeyCode::Backspace => {
-            if key.modifiers.contains(KeyModifiers::ALT) {
-                // Alt+Backspace = Esc + Backspace (delete word)
-                vec![0x1b, 0x7f]
-            } else if key.modifiers.contains(KeyModifiers::CONTROL) {
-                // Ctrl+Backspace = Ctrl+W (delete word backward)
-                vec![0x17]
-            } else {
-                vec![0x7f]
+                if key.modifiers.contains(KeyModifiers::ALT) {
+                    // Alt+Backspace = Esc + Backspace (delete word)
+                    vec![0x1b, 0x7f]
+                } else if key.modifiers.contains(KeyModifiers::CONTROL) {
+                    // Ctrl+Backspace = Ctrl+W (delete word backward)
+                    vec![0x17]
+                } else {
+                    vec![0x7f]
+                }
             }
-        },
             KeyCode::Tab => vec![b'\t'],
             KeyCode::Esc => vec![0x1b],
             KeyCode::Up => vec![0x1b, b'[', b'A'],
@@ -3665,7 +3675,7 @@ impl App {
                 self.editing_detail = false;
             }
             KeyCode::Esc => {
-                 self.detail_view_focused = false;
+                self.detail_view_focused = false;
             }
             KeyCode::Up | KeyCode::Char('k') => {
                 if self.detail_view_item_index > 0 {
@@ -3681,9 +3691,9 @@ impl App {
             KeyCode::Enter | KeyCode::Char(' ') => {
                 self.start_detail_edit().await?;
             }
-             _ => {
-                 handled = false;
-             }
+            _ => {
+                handled = false;
+            }
         }
         Ok(handled)
     }
@@ -3692,7 +3702,7 @@ impl App {
     async fn start_detail_edit(&mut self) -> Result<()> {
         let mut initial_value = None;
         let mut is_toggle = false;
-        
+
         if let Some(host) = self.selected_host() {
             match self.detail_view_item_index {
                 0 => initial_value = Some(host.name.clone()),
@@ -3721,13 +3731,18 @@ impl App {
     /// Toggle auth method (simplified for inline edit)
     async fn toggle_auth_method(&mut self) -> Result<()> {
         self.modify_selected_host(|host| {
-             use crate::config::AuthMethod;
-             match host.auth {
-                 AuthMethod::Password => host.auth = AuthMethod::KeyFile { path: std::path::PathBuf::from("id_rsa"), passphrase_required: false },
-                 AuthMethod::KeyFile { .. } => host.auth = AuthMethod::Agent,
-                 AuthMethod::Agent => host.auth = AuthMethod::Password,
-                 _ => host.auth = AuthMethod::Password,
-             }
+            use crate::config::AuthMethod;
+            match host.auth {
+                AuthMethod::Password => {
+                    host.auth = AuthMethod::KeyFile {
+                        path: std::path::PathBuf::from("id_rsa"),
+                        passphrase_required: false,
+                    }
+                }
+                AuthMethod::KeyFile { .. } => host.auth = AuthMethod::Agent,
+                AuthMethod::Agent => host.auth = AuthMethod::Password,
+                _ => host.auth = AuthMethod::Password,
+            }
         });
         self.config.save().await?;
         Ok(())
@@ -3746,28 +3761,27 @@ impl App {
     async fn save_detail_edit(&mut self) -> Result<()> {
         let val = self.temp_edit_buffer.clone();
         let idx = self.detail_view_item_index;
-        
-        self.modify_selected_host(|host| {
-            match idx {
-                0 => host.name = val,
-                1 => host.hostname = val,
-                2 => {
-                    if let Ok(p) = val.parse::<u16>() {
-                        host.port = p;
-                    }
+
+        self.modify_selected_host(|host| match idx {
+            0 => host.name = val,
+            1 => host.hostname = val,
+            2 => {
+                if let Ok(p) = val.parse::<u16>() {
+                    host.port = p;
                 }
-                3 => host.username = val,
-                _ => {}
             }
+            3 => host.username = val,
+            _ => {}
         });
-        
+
         self.config.save().await?;
         Ok(())
     }
 
     /// Helper to modify the currently selected host
-    fn modify_selected_host<F>(&mut self, f: F) 
-    where F: FnOnce(&mut crate::config::HostConfig) 
+    fn modify_selected_host<F>(&mut self, f: F)
+    where
+        F: FnOnce(&mut crate::config::HostConfig),
     {
         let mut idx = 0;
         let selected_idx = self.selected_host_index;
@@ -3787,9 +3801,9 @@ impl App {
 
         let ungrouped_idx = selected_idx.saturating_sub(idx);
         if ungrouped_idx < self.config.hosts.len() {
-             if let Some(host) = self.config.hosts.get_mut(ungrouped_idx) {
-                 f(host);
-             }
+            if let Some(host) = self.config.hosts.get_mut(ungrouped_idx) {
+                f(host);
+            }
         }
     }
 }
