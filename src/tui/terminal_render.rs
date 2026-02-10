@@ -147,8 +147,18 @@ fn render_screen_to_lines_impl(
                 false
             };
 
-            let (content_str, mut style) = if let Some(cell) = screen.cell(row, col) {
-                let s = CellStyle::from_vt100_cell(cell);
+            let cell = screen.cell(row, col);
+
+            // Skip wide continuation cells (second cell of a CJK/wide character).
+            // These are empty placeholder cells; ratatui handles the width natively.
+            if let Some(ref c) = cell {
+                if c.is_wide_continuation() {
+                    continue;
+                }
+            }
+
+            let (content_str, mut style) = if let Some(cell) = cell {
+                let s = CellStyle::from_vt100_cell(&cell);
                 let c = cell.contents();
                 let content = if c.is_empty() { " " } else { c };
                 (content, s)
