@@ -11,5 +11,5 @@ mod tunnel;
 pub use auth::Authenticator;
 pub use connection::{ConnectionPool, ProxyConnection, SshConnection};
 pub use keys::KeyManager;
-pub use session::{Session, SessionManager, TextSelection};
+pub use session::{Session, SessionManager, SessionStatus, TextSelection};
 pub use tunnel::{Tunnel, TunnelManager, TunnelType};

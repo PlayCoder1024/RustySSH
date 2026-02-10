@@ -241,26 +241,31 @@ impl TransferQueue {
             self.complete(progress.id, Some(err));
             return;
         }
-        
+
         if let Some(item) = self.active.iter_mut().find(|t| t.id == progress.id) {
             item.transferred_bytes = progress.transferred_bytes;
             item.speed = progress.speed;
-            
+
             // Check for completion
             if item.transferred_bytes >= item.total_bytes && item.total_bytes > 0 {
-                 // Completion is now handled via explicit "done" progress or length check?
-                 // Let's rely on length check for now, but really worker should signal done.
-                 // Actually worker will just exit loop. 
-                 // We need explicit DONE signal.
-                 // Let's assume if bytes == total, it's done. 
-                 // But worker might send final update.
-                 // Let's change update_progress to call complete if done.
+                // Completion is now handled via explicit "done" progress or length check?
+                // Let's rely on length check for now, but really worker should signal done.
+                // Actually worker will just exit loop.
+                // We need explicit DONE signal.
+                // Let's assume if bytes == total, it's done.
+                // But worker might send final update.
+                // Let's change update_progress to call complete if done.
             }
         }
-        
+
         // Also check if done
         let id = progress.id;
-        let done = self.active.iter().find(|t| t.id == id).map(|t| t.transferred_bytes >= t.total_bytes && t.total_bytes > 0).unwrap_or(false);
+        let done = self
+            .active
+            .iter()
+            .find(|t| t.id == id)
+            .map(|t| t.transferred_bytes >= t.total_bytes && t.total_bytes > 0)
+            .unwrap_or(false);
         if done {
             self.complete(id, None);
         }
@@ -377,7 +382,7 @@ pub fn run_transfer_worker(
         }
         Err(e) => {
             warn!(target: "sftp::transfer", "Failed to open SFTP subsystem: {}", e);
-             while let Some(item) = command_rx.blocking_recv() {
+            while let Some(item) = command_rx.blocking_recv() {
                 let _ = progress_tx.send(TransferProgress {
                     id: item.id,
                     transferred_bytes: 0,
@@ -417,7 +422,7 @@ pub fn run_transfer_worker(
         };
 
         let result: Result<(), anyhow::Error> = (|| {
-             match item.direction {
+            match item.direction {
                 TransferDirection::Upload => {
                     let mut local_file = std::fs::File::open(&item.source)?;
                     // Ensure parent directory exists? Sftp::create might fail if parent missing.
@@ -426,17 +431,23 @@ pub fn run_transfer_worker(
 
                     let mut buffer = [0u8; 32768]; // 32KB buffer
                     let _file_size = local_file.metadata()?.len();
-                    
+
                     loop {
                         let n = local_file.read(&mut buffer)?;
-                        if n == 0 { break; }
+                        if n == 0 {
+                            break;
+                        }
                         remote_file.write_all(&buffer[..n])?;
                         transferred += n as u64;
-                        
+
                         // Update progress periodically
                         if last_update.elapsed().as_millis() >= 100 {
                             let duration = start_time.elapsed().as_secs_f64();
-                            let speed = if duration > 0.0 { transferred as f64 / duration } else { 0.0 };
+                            let speed = if duration > 0.0 {
+                                transferred as f64 / duration
+                            } else {
+                                0.0
+                            };
                             send_progress(transferred, speed, None);
                             last_update = Instant::now();
                         }
@@ -445,18 +456,24 @@ pub fn run_transfer_worker(
                 TransferDirection::Download => {
                     let mut remote_file = sftp.open(&item.source)?;
                     let mut local_file = std::fs::File::create(&item.destination)?;
-                    
+
                     let mut buffer = [0u8; 32768];
-                    
+
                     loop {
                         let n = remote_file.read(&mut buffer)?;
-                        if n == 0 { break; }
+                        if n == 0 {
+                            break;
+                        }
                         local_file.write_all(&buffer[..n])?;
                         transferred += n as u64;
-                        
+
                         if last_update.elapsed().as_millis() >= 100 {
                             let duration = start_time.elapsed().as_secs_f64();
-                            let speed = if duration > 0.0 { transferred as f64 / duration } else { 0.0 };
+                            let speed = if duration > 0.0 {
+                                transferred as f64 / duration
+                            } else {
+                                0.0
+                            };
                             send_progress(transferred, speed, None);
                             last_update = Instant::now();
                         }
@@ -467,14 +484,18 @@ pub fn run_transfer_worker(
         })();
 
         if let Err(e) = result {
-             send_progress(transferred, 0.0, Some(e.to_string()));
+            send_progress(transferred, 0.0, Some(e.to_string()));
         } else {
-             // Final update (ensure 100%)
-             let duration = start_time.elapsed().as_secs_f64();
-             let speed = if duration > 0.0 { transferred as f64 / duration } else { 0.0 };
-             // Use total_bytes if available to force 100% visualization
-             let final_bytes = if total > 0 { total } else { transferred };
-             send_progress(final_bytes, speed, None);
+            // Final update (ensure 100%)
+            let duration = start_time.elapsed().as_secs_f64();
+            let speed = if duration > 0.0 {
+                transferred as f64 / duration
+            } else {
+                0.0
+            };
+            // Use total_bytes if available to force 100% visualization
+            let final_bytes = if total > 0 { total } else { transferred };
+            send_progress(final_bytes, speed, None);
         }
     }
 }

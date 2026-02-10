@@ -413,7 +413,7 @@ mod tests {
 
     #[test]
     fn test_highlight_styled_line() {
-         let config = TerminalHighlightConfig {
+        let config = TerminalHighlightConfig {
             enabled: true,
             success_keywords: vec!["success".to_string()],
             error_keywords: vec![],
@@ -422,16 +422,17 @@ mod tests {
         };
         let highlighter = Highlighter::new(&config);
 
-        let input = Line::from(vec![
-            Span::styled("test success", Style::default().fg(Color::White)),
-        ]);
+        let input = Line::from(vec![Span::styled(
+            "test success",
+            Style::default().fg(Color::White),
+        )]);
         let output = highlighter.highlight_styled_line(input);
-        
+
         let spans = output.spans;
         // Start span
         assert_eq!(spans[0].content, "test ");
         assert_eq!(spans[0].style.fg, Some(Color::White));
-        
+
         // Highlighted span
         assert_eq!(spans[1].content, "success");
         assert_eq!(spans[1].style.fg, Some(Color::Green));

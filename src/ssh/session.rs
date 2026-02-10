@@ -85,6 +85,8 @@ pub struct Session {
     pub selection: Option<TextSelection>,
     /// Whether user is currently selecting (mouse drag in progress)
     pub is_selecting: bool,
+    /// Progress of current operation (0.0 to 1.0), or None if idle
+    pub progress: Option<f32>,
 }
 
 impl Session {
@@ -104,6 +106,7 @@ impl Session {
             rows,
             selection: None,
             is_selecting: false,
+            progress: None,
         }
     }
 
@@ -112,8 +115,67 @@ impl Session {
         // Auto-scroll to bottom when new data arrives
         self.vt.screen_mut().set_scrollback(0);
         self.scroll_offset = 0;
+
+        // Parse OSC 9;4 progress sequences before passing to VT100
+        // Format: ESC ] 9;4;STATE;VALUE BEL  or  ESC ] 9;4;STATE;VALUE ST
+        // STATE: 0=remove, 1=set, 2=error, 3=indeterminate
+        // VALUE: 0-100 (percentage)
+        self.parse_osc_progress(data);
+
         // Process through VT100
         self.vt.process(data);
+    }
+
+    /// Parse OSC 9;4 progress sequences from terminal data
+    fn parse_osc_progress(&mut self, data: &[u8]) {
+        // Look for ESC ] 9;4; pattern
+        let mut i = 0;
+        while i < data.len() {
+            // Check for ESC ] (0x1B 0x5D)
+            if data[i] == 0x1B && i + 1 < data.len() && data[i + 1] == 0x5D {
+                // Found OSC start, look for "9;4;"
+                let osc_start = i + 2;
+                if let Some(osc_body) = data.get(osc_start..) {
+                    if osc_body.starts_with(b"9;4;") {
+                        // Parse state and optional value
+                        let params_start = osc_start + 4; // skip "9;4;"
+                                                          // Find the terminator: BEL (0x07) or ST (ESC \)
+                        let mut end = params_start;
+                        while end < data.len() {
+                            if data[end] == 0x07 {
+                                break;
+                            }
+                            if data[end] == 0x1B && end + 1 < data.len() && data[end + 1] == b'\\' {
+                                break;
+                            }
+                            end += 1;
+                        }
+                        if end > params_start {
+                            let params = &data[params_start..end];
+                            if let Ok(params_str) = std::str::from_utf8(params) {
+                                let parts: Vec<&str> = params_str.splitn(2, ';').collect();
+                                let state: u8 = parts[0].parse().unwrap_or(0);
+                                let value: f32 = parts
+                                    .get(1)
+                                    .and_then(|v| v.parse::<f32>().ok())
+                                    .unwrap_or(0.0);
+
+                                match state {
+                                    0 => self.progress = None,                // Remove progress
+                                    1 => self.progress = Some(value / 100.0), // Normal progress
+                                    2 => self.progress = Some(value / 100.0), // Error (still show)
+                                    3 => self.progress = Some(-1.0),          // Indeterminate
+                                    _ => {}
+                                }
+                            }
+                        }
+                        i = end;
+                        continue;
+                    }
+                }
+            }
+            i += 1;
+        }
     }
 
     /// Get current screen content
@@ -318,7 +380,7 @@ impl Session {
                 .cell(row, start - 1)
                 .map(|c| c.contents().chars().next().unwrap_or(' '))
                 .unwrap_or(' ');
-            
+
             if is_separator(prev_char) != target_is_sep {
                 break;
             }
@@ -332,7 +394,7 @@ impl Session {
                 .cell(row, end + 1)
                 .map(|c| c.contents().chars().next().unwrap_or(' '))
                 .unwrap_or(' ');
-            
+
             if is_separator(next_char) != target_is_sep {
                 break;
             }

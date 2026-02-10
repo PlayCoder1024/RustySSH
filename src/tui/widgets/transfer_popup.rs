@@ -30,11 +30,11 @@ impl<'a> TransferPopup<'a> {
         // Calculate popup area (bottom right corner, fixed width)
         let width = 60;
         let height = (self.transfer_info.active_transfers.len() * 3 + 2).min(15) as u16; // 3 lines per transfer + padding
-        
+
         // Position at bottom right, above status bar
         let area = Rect::new(
             self.area.width.saturating_sub(width + 2),
-            self.area.height.saturating_sub(height + 2), 
+            self.area.height.saturating_sub(height + 2),
             width,
             height,
         );
@@ -73,18 +73,21 @@ impl<'a> TransferPopup<'a> {
             if i >= layout.len() {
                 break;
             }
-            
+
             let chunk = layout[i];
-            
+
             // Top line: Filename + Action
-            let action = if transfer.is_upload { "↑ Uploading" } else { "↓ Downloading" };
+            let action = if transfer.is_upload {
+                "↑ Uploading"
+            } else {
+                "↓ Downloading"
+            };
             let title = format!("{} {}", action, transfer.filename);
-            
+
             let label_area = Rect::new(chunk.x, chunk.y, chunk.width, 1);
             frame.render_widget(
-                ratatui::widgets::Paragraph::new(title)
-                    .style(self.theme.text()),
-                label_area
+                ratatui::widgets::Paragraph::new(title).style(self.theme.text()),
+                label_area,
             );
 
             // Middle line: Progress Bar
@@ -93,7 +96,7 @@ impl<'a> TransferPopup<'a> {
                 .gauge_style(self.theme.progress_bar())
                 .ratio(transfer.progress / 100.0)
                 .label(format!("{:.1}%", transfer.progress));
-            
+
             frame.render_widget(gauge, gauge_area);
 
             // Bottom line: Speed + ETA
@@ -103,7 +106,7 @@ impl<'a> TransferPopup<'a> {
                 ratatui::widgets::Paragraph::new(details)
                     .style(self.theme.text_dim())
                     .alignment(Alignment::Right),
-                details_area
+                details_area,
             );
         }
     }

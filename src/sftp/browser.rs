@@ -387,7 +387,10 @@ impl FilePane {
     pub fn go_parent(&mut self) -> Option<String> {
         if let Some(parent) = self.path.parent() {
             if parent != self.path {
-                let old_name = self.path.file_name().map(|n| n.to_string_lossy().to_string());
+                let old_name = self
+                    .path
+                    .file_name()
+                    .map(|n| n.to_string_lossy().to_string());
                 self.path = parent.to_path_buf();
                 self.cursor = 0;
                 return old_name;

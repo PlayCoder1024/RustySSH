@@ -37,8 +37,8 @@ pub fn init(settings: &LogSettings) -> Option<WorkerGuard> {
     let (non_blocking, guard) = tracing_appender::non_blocking(file_appender);
 
     // Build the subscriber with file output only
-    let env_filter = EnvFilter::try_from_default_env()
-        .unwrap_or_else(|_| EnvFilter::new("info,rustyssh=debug"));
+    let env_filter =
+        EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("info,rustyssh=debug"));
 
     tracing_subscriber::registry()
         .with(env_filter)

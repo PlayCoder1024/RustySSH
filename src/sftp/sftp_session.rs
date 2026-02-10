@@ -117,12 +117,10 @@ impl SftpSession {
     /// Create a directory
     pub fn mkdir(&self, path: &Path, mode: i32) -> Result<()> {
         info!(target: "sftp", "Creating directory: {}", path.display());
-        self.sftp
-            .mkdir(path, mode)
-            .map_err(|e| {
-                warn!(target: "sftp", "Failed to create directory {}: {}", path.display(), e);
-                anyhow!("Failed to mkdir {}: {}", path.display(), e)
-            })?;
+        self.sftp.mkdir(path, mode).map_err(|e| {
+            warn!(target: "sftp", "Failed to create directory {}: {}", path.display(), e);
+            anyhow!("Failed to mkdir {}: {}", path.display(), e)
+        })?;
         info!(target: "sftp", "Directory created: {}", path.display());
         Ok(())
     }
@@ -130,12 +128,10 @@ impl SftpSession {
     /// Remove a directory (not exposed in remote UI per safety requirements)
     pub fn rmdir(&self, path: &Path) -> Result<()> {
         info!(target: "sftp", "Removing directory: {}", path.display());
-        self.sftp
-            .rmdir(path)
-            .map_err(|e| {
-                warn!(target: "sftp", "Failed to remove directory {}: {}", path.display(), e);
-                anyhow!("Failed to rmdir {}: {}", path.display(), e)
-            })?;
+        self.sftp.rmdir(path).map_err(|e| {
+            warn!(target: "sftp", "Failed to remove directory {}: {}", path.display(), e);
+            anyhow!("Failed to rmdir {}: {}", path.display(), e)
+        })?;
         info!(target: "sftp", "Directory removed: {}", path.display());
         Ok(())
     }
@@ -143,12 +139,10 @@ impl SftpSession {
     /// Remove a file (not exposed in remote UI per safety requirements)
     pub fn unlink(&self, path: &Path) -> Result<()> {
         info!(target: "sftp", "Removing file: {}", path.display());
-        self.sftp
-            .unlink(path)
-            .map_err(|e| {
-                warn!(target: "sftp", "Failed to remove file {}: {}", path.display(), e);
-                anyhow!("Failed to unlink {}: {}", path.display(), e)
-            })?;
+        self.sftp.unlink(path).map_err(|e| {
+            warn!(target: "sftp", "Failed to remove file {}: {}", path.display(), e);
+            anyhow!("Failed to unlink {}: {}", path.display(), e)
+        })?;
         info!(target: "sftp", "File removed: {}", path.display());
         Ok(())
     }

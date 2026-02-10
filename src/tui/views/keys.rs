@@ -48,17 +48,22 @@ pub fn render_state(frame: &mut Frame, state: &RenderState, area: Rect) {
             Cell::from("Encrypted").style(theme.text_dim()),
         ]);
 
-        let rows: Vec<Row> = state.ssh_keys.iter().enumerate().map(|(i, key)| {
-            let is_selected = i == state.settings_item; // Reusing settings_item for selection index if in settings view
-            // Note: This relies on settings_item being the index. If we are in View::Keys, we need a different index in RenderState?
-            // The plan is to put this in Settings. In Settings, settings_item tracks the selected item in the list.
-            // If we are just listing keys, we might need a separate 'selected_key_index'. 
-            // BUT, for now let's assume valid mapping or just not highlight if not applicable.
-            // Actually, in Settings view, `settings_item` tracks the index within the category. 
-            // If we are in the "Keys" category, `settings_item` will be the key index.
-            
-            create_key_row_snapshot(key, theme, is_selected)
-        }).collect();
+        let rows: Vec<Row> = state
+            .ssh_keys
+            .iter()
+            .enumerate()
+            .map(|(i, key)| {
+                let is_selected = i == state.settings_item; // Reusing settings_item for selection index if in settings view
+                                                            // Note: This relies on settings_item being the index. If we are in View::Keys, we need a different index in RenderState?
+                                                            // The plan is to put this in Settings. In Settings, settings_item tracks the selected item in the list.
+                                                            // If we are just listing keys, we might need a separate 'selected_key_index'.
+                                                            // BUT, for now let's assume valid mapping or just not highlight if not applicable.
+                                                            // Actually, in Settings view, `settings_item` tracks the index within the category.
+                                                            // If we are in the "Keys" category, `settings_item` will be the key index.
+
+                create_key_row_snapshot(key, theme, is_selected)
+            })
+            .collect();
 
         let widths = [
             Constraint::Length(10), // Type
@@ -86,7 +91,7 @@ pub fn render_state(frame: &mut Frame, state: &RenderState, area: Rect) {
             Span::styled(":Generate  ", theme.text_dim()),
             Span::styled("d", theme.key_hint()),
             Span::styled(":Delete  ", theme.text_dim()),
-             Span::styled("r", theme.key_hint()),
+            Span::styled("r", theme.key_hint()),
             Span::styled(":Refresh", theme.text_dim()),
         ]);
         frame.render_widget(Paragraph::new(help), chunks[1]);

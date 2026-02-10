@@ -49,6 +49,8 @@ pub struct SessionInfo {
     pub cursor_visible: bool,
     /// Selection state for rendering (normalized start/end positions)
     pub selection: Option<((u16, u16), (u16, u16))>,
+    pub status: crate::ssh::SessionStatus,
+    pub progress: Option<f32>,
 }
 
 /// Render state snapshot (avoids borrow conflicts in draw callback)
@@ -118,6 +120,8 @@ pub struct RenderState {
     pub temp_edit_buffer: String,
     /// SSH keys list
     pub ssh_keys: Vec<KeyInfoSnapshot>,
+    // Animation state
+    pub frame_count: usize,
 }
 
 /// Snapshot of a file pane for rendering
@@ -301,6 +305,8 @@ pub struct App {
     pub last_click_pos: Option<(u16, u16)>,
     /// Consecutive click count
     pub click_count: u8,
+    /// Frame count for animations
+    pub frame_count: usize,
 }
 
 impl App {
@@ -398,6 +404,7 @@ impl App {
             last_click_time: None,
             last_click_pos: None,
             click_count: 0,
+            frame_count: 0,
         })
     }
 
@@ -577,6 +584,8 @@ impl App {
                                     } else {
                                         None
                                     },
+                                    status: s.status,
+                                    progress: s.progress,
                                 }
                             })
                             .collect()
@@ -584,6 +593,8 @@ impl App {
                     active_session: self.active_session,
                     status_message: self.status_message.clone(),
                     selected_host_index: self.selected_host_index,
+
+                    // Populate other fields...
                     host_count: self.all_hosts().len(),
                     file_browser: self.file_browser.as_ref().map(|browser| {
                         use crate::sftp::PaneSide;
@@ -689,6 +700,7 @@ impl App {
                             path: k.path.to_string_lossy().to_string(),
                         })
                         .collect(),
+                    frame_count: self.frame_count,
                 };
 
                 // Render UI
@@ -712,7 +724,7 @@ impl App {
                     let session_chunks = ratatui::layout::Layout::default()
                         .direction(ratatui::layout::Direction::Vertical)
                         .constraints([
-                            ratatui::layout::Constraint::Length(2), // Tabs
+                            ratatui::layout::Constraint::Length(1), // Tabs
                             ratatui::layout::Constraint::Min(1),    // Terminal
                         ])
                         .split(chunks[0]);
@@ -809,7 +821,6 @@ impl App {
                         return Ok(true);
                     }
                 }
-
 
                 // Handle find overlay input
                 if self.view == View::Session && self.find_overlay_visible {
@@ -926,6 +937,21 @@ impl App {
                 // Show spinner if connecting
                 if self.connecting_to_host.is_some() {
                     needs_redraw = true;
+                }
+
+                // Increment animation frame
+                self.frame_count = self.frame_count.wrapping_add(1);
+
+                // Redraw if any session has progress or connecting (to animate tabs)
+                if !needs_redraw {
+                    for session in self.sessions.list() {
+                        if session.progress.is_some()
+                            || session.status == crate::ssh::SessionStatus::Connecting
+                        {
+                            needs_redraw = true;
+                            break;
+                        }
+                    }
                 }
 
                 // Poll pending connection if any
@@ -1880,6 +1906,11 @@ impl App {
                     cols as u16,
                     rows as u16,
                 );
+
+                // Set status to Connected immediately since the connection is already established
+                if let Some(session) = self.sessions.get_mut(session_id) {
+                    session.status = crate::ssh::SessionStatus::Connected;
+                }
 
                 // Set up channel I/O
                 let (input_tx, input_rx) = mpsc::unbounded_channel::<Vec<u8>>();

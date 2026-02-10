@@ -231,7 +231,7 @@ mod tests {
         parser.process(b"Hello world");
         let screen = parser.screen();
         let lines = render_screen_to_lines(screen);
-        
+
         let first_line = &lines[0];
         assert_eq!(first_line.spans.len(), 1);
         assert_eq!(first_line.spans[0].content, "Hello world");
@@ -244,17 +244,17 @@ mod tests {
         parser.process(b"\x1b[31mRed\x1b[0m \x1b[32mGreen\x1b[0m");
         let screen = parser.screen();
         let lines = render_screen_to_lines(screen);
-        
+
         let first_line = &lines[0];
         // "Red" (red), " " (default), "Green" (green)
         assert_eq!(first_line.spans.len(), 3);
         assert_eq!(first_line.spans[0].content, "Red");
         // vt100 returns Indexed(1) for Red
         assert_eq!(first_line.spans[0].style.fg, Some(Color::Indexed(1)));
-        
+
         assert_eq!(first_line.spans[1].content, " ");
         assert_eq!(first_line.spans[1].style, Style::default());
-        
+
         assert_eq!(first_line.spans[2].content, "Green");
         // vt100 returns Indexed(2) for Green
         assert_eq!(first_line.spans[2].style.fg, Some(Color::Indexed(2)));
@@ -267,13 +267,15 @@ mod tests {
         let screen = parser.screen();
         let cell = screen.cell(0, 0).unwrap();
         let style = CellStyle::from_vt100_cell(cell);
-        
+
         assert_eq!(style.fg, Some(Color::Indexed(1)));
         assert!(style.bold);
-        
+
         let ratatui_style = style.to_style();
         assert_eq!(ratatui_style.fg, Some(Color::Indexed(1)));
         // Note: ratatui's Modifier is a bitflag.
-        assert!(ratatui_style.add_modifier.contains(ratatui::style::Modifier::BOLD));
+        assert!(ratatui_style
+            .add_modifier
+            .contains(ratatui::style::Modifier::BOLD));
     }
 }

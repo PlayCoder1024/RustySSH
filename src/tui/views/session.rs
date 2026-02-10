@@ -31,21 +31,62 @@ pub fn render_state(frame: &mut Frame, state: &RenderState, area: Rect) -> Optio
     // Layout: tabs + terminal
     let chunks = Layout::default()
         .direction(Direction::Vertical)
-        .constraints([Constraint::Length(2), Constraint::Min(1)])
+        .constraints([Constraint::Length(1), Constraint::Min(1)])
         .split(area);
 
     // Render tabs
+    let spinner_frames = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
     let titles: Vec<Line> = state
         .sessions
         .iter()
         .map(|session| {
             let is_active = state.active_session == Some(session.id);
+
+            // Base style
             let style = if is_active {
-                theme.selected()
+                theme.selected().add_modifier(Modifier::BOLD)
             } else {
-                theme.text()
+                theme.text_dim()
             };
-            Line::from(vec![Span::styled(format!(" {} ", session.name), style)])
+
+            let mut spans = Vec::new();
+
+            // Status indicator / Icon
+            if session.status == crate::ssh::SessionStatus::Connecting {
+                let frame = spinner_frames[state.frame_count % spinner_frames.len()];
+                spans.push(Span::styled(format!(" {} ", frame), theme.accent_warning()));
+            } else if let Some(progress) = session.progress {
+                if progress < 0.0 {
+                    // Indeterminate progress — show spinner
+                    let frame = spinner_frames[state.frame_count % spinner_frames.len()];
+                    spans.push(Span::styled(format!(" {} ", frame), theme.accent_info()));
+                } else {
+                    // Progress pie chart (Nerd Font circle slices to match icon size)
+                    let pie_frames = ["󰝦", "󰪞", "󰪠", "󰪣", "󰪥", "󰝥"];
+                    let idx =
+                        (progress.clamp(0.0, 1.0) * (pie_frames.len() - 1) as f32).round() as usize;
+                    spans.push(Span::styled(
+                        format!(" {} ", pie_frames[idx]),
+                        theme.accent_info(),
+                    ));
+                }
+            } else {
+                // Static icon
+                let icon = if is_active { " " } else { " " };
+                spans.push(Span::styled(
+                    format!(" {} ", icon),
+                    if is_active {
+                        Style::default().fg(theme.accent_primary())
+                    } else {
+                        theme.text_dim()
+                    },
+                ));
+            }
+
+            // Name
+            spans.push(Span::styled(format!("{} ", session.name), style));
+
+            Line::from(spans)
         })
         .collect();
 
@@ -130,7 +171,7 @@ pub fn render(frame: &mut Frame, app: &App, area: Rect) {
     let chunks = Layout::default()
         .direction(Direction::Vertical)
         .constraints([
-            Constraint::Length(2), // Tab bar
+            Constraint::Length(1), // Tab bar
             Constraint::Min(1),    // Terminal content
         ])
         .split(area);

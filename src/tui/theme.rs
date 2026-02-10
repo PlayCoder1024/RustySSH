@@ -250,7 +250,9 @@ impl Theme {
 
     /// Progress bar style
     pub fn progress_bar(&self) -> Style {
-        Style::default().fg(self.accent_secondary()).bg(self.bg_highlight())
+        Style::default()
+            .fg(self.accent_secondary())
+            .bg(self.bg_highlight())
     }
 }
 

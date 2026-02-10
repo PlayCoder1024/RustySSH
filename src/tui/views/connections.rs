@@ -679,10 +679,10 @@ fn render_details_panel_state(frame: &mut Frame, state: &RenderState, area: Rect
         Span::styled("Details", theme.title()),
         Span::styled(" ", theme.title()),
         if is_focused {
-             Span::styled(" [EDIT] ", theme.error())
+            Span::styled(" [EDIT] ", theme.error())
         } else {
-             Span::raw("")
-        } 
+            Span::raw("")
+        },
     ];
     let title = Line::from(title_spans);
 
@@ -723,14 +723,21 @@ fn render_details_panel_state(frame: &mut Frame, state: &RenderState, area: Rect
             ("Port", host.port.to_string()),
             ("User", host.username.clone()),
             ("Auth Method", auth_str),
-            ("Remember Pwd", if host.remember_password { "Yes".to_string() } else { "No".to_string() }),
+            (
+                "Remember Pwd",
+                if host.remember_password {
+                    "Yes".to_string()
+                } else {
+                    "No".to_string()
+                },
+            ),
         ];
 
         let mut y = inner.y;
         for (i, (label, value)) in items.iter().enumerate() {
             let is_selected = i == state.detail_view_item_index && is_focused;
             let is_editing = is_selected && state.editing_detail;
-            
+
             let display_value = if is_editing {
                 // Show cursor
                 format!("{}|", state.temp_edit_buffer)
@@ -741,29 +748,43 @@ fn render_details_panel_state(frame: &mut Frame, state: &RenderState, area: Rect
             render_detail_field(frame, inner, y, label, &display_value, is_selected, theme);
             y += 2;
         }
-        
     } else {
-         frame.render_widget(Paragraph::new("No host selected").style(Style::default().fg(theme.fg_dim())), inner);
+        frame.render_widget(
+            Paragraph::new("No host selected").style(Style::default().fg(theme.fg_dim())),
+            inner,
+        );
     }
 }
 
-fn render_detail_field(frame: &mut Frame, area: Rect, y: u16, label: &str, value: &str, is_selected: bool, theme: &crate::tui::Theme) {
+fn render_detail_field(
+    frame: &mut Frame,
+    area: Rect,
+    y: u16,
+    label: &str,
+    value: &str,
+    is_selected: bool,
+    theme: &crate::tui::Theme,
+) {
     if y >= area.y + area.height {
         return;
     }
-    
+
     let row_area = Rect::new(area.x, y, area.width, 1);
-    
+
     let label_style = if is_selected {
-        Style::default().fg(theme.accent_primary()).add_modifier(Modifier::BOLD)
+        Style::default()
+            .fg(theme.accent_primary())
+            .add_modifier(Modifier::BOLD)
     } else {
         Style::default().fg(theme.fg_dim())
     };
 
     let value_style = if is_selected {
-         Style::default().fg(theme.fg_bright()).bg(theme.bg_selected())
+        Style::default()
+            .fg(theme.fg_bright())
+            .bg(theme.bg_selected())
     } else {
-         theme.text()
+        theme.text()
     };
 
     let layouts = Layout::default()
