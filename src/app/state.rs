@@ -102,6 +102,10 @@ pub struct RenderState {
     pub host_search_selected: usize,
     /// Host edit overlay visible (connections view)
     pub host_edit_visible: bool,
+    /// Host edit overlay is creating a new host
+    pub host_edit_is_new: bool,
+    /// Draft host config for edit overlay (new host only)
+    pub host_edit_draft: Option<HostConfig>,
     /// Delete confirm overlay visible (connections view)
     pub delete_confirm_visible: bool,
     /// Host id pending deletion confirmation
@@ -287,6 +291,12 @@ pub struct App {
     pub host_search_selected: usize,
     /// Host edit overlay visible (connections view)
     pub host_edit_visible: bool,
+    /// Host edit overlay is creating a new host
+    pub host_edit_is_new: bool,
+    /// Draft host config for edit overlay (new host only)
+    pub host_edit_draft: Option<HostConfig>,
+    /// Default host template for new host comparison
+    pub host_edit_default: Option<HostConfig>,
     /// Delete confirm overlay visible (connections view)
     pub delete_confirm_visible: bool,
     /// Host id pending deletion confirmation
@@ -404,6 +414,9 @@ impl App {
             host_search_results: Vec::new(),
             host_search_selected: 0,
             host_edit_visible: false,
+            host_edit_is_new: false,
+            host_edit_draft: None,
+            host_edit_default: None,
             delete_confirm_visible: false,
             delete_confirm_host_id: None,
             settings_category: 0,
@@ -688,6 +701,8 @@ impl App {
                     host_search_results: self.host_search_results.clone(),
                     host_search_selected: self.host_search_selected,
                     host_edit_visible: self.host_edit_visible,
+                    host_edit_is_new: self.host_edit_is_new,
+                    host_edit_draft: self.host_edit_draft.clone(),
                     delete_confirm_visible: self.delete_confirm_visible,
                     delete_confirm_host_id: self.delete_confirm_host_id,
                     settings_category: self.settings_category,
@@ -1332,13 +1347,16 @@ impl App {
                 }
             }
             KeyCode::Char('n') => {
-                // Add a new host
-                self.add_quick_host().await?;
+                // Open new host edit overlay
+                self.open_new_host_edit();
             }
             KeyCode::Char('e') => {
                 // Open host edit overlay
                 if self.selected_host().is_some() {
                     self.host_edit_visible = true;
+                    self.host_edit_is_new = false;
+                    self.host_edit_draft = None;
+                    self.host_edit_default = None;
                     self.detail_view_focused = false;
                     self.detail_view_item_index = 0;
                     self.editing_detail = false;
@@ -1457,7 +1475,7 @@ impl App {
 
         match key.code {
             KeyCode::Esc => {
-                self.host_edit_visible = false;
+                self.close_host_edit().await?;
             }
             KeyCode::Up | KeyCode::Char('k') => {
                 if self.detail_view_item_index > 0 {
@@ -1641,27 +1659,90 @@ impl App {
         }
     }
 
-    /// Quick add a new host with minimal prompts
-    async fn add_quick_host(&mut self) -> Result<()> {
-        use crate::config::HostConfig;
+    fn open_new_host_edit(&mut self) {
+        let default_host = self.build_default_new_host();
+        self.host_edit_visible = true;
+        self.host_edit_is_new = true;
+        self.host_edit_draft = Some(default_host.clone());
+        self.host_edit_default = Some(default_host);
+        self.detail_view_focused = false;
+        self.detail_view_item_index = 0;
+        self.editing_detail = false;
+        self.temp_edit_buffer.clear();
+    }
 
-        // Create a new host with sensible defaults
+    fn build_default_new_host(&self) -> HostConfig {
         let username = whoami::username();
         let host_num = self.config.hosts.len() + 1;
-        let new_host = HostConfig::new(format!("new-host-{}", host_num), "localhost", username);
+        HostConfig::new(format!("new-host-{}", host_num), "localhost", username)
+    }
 
-        self.config.hosts.push(new_host.clone());
-        self.config.save().await?;
+    async fn close_host_edit(&mut self) -> Result<()> {
+        if self.host_edit_is_new {
+            if let (Some(draft), Some(default_host)) =
+                (self.host_edit_draft.as_ref(), self.host_edit_default.as_ref())
+            {
+                if !self.host_is_default(draft, default_host) {
+                    let new_host = draft.clone();
+                    self.config.hosts.push(new_host.clone());
+                    self.config.save().await?;
+                    self.status_message = Some(format!("Added host: {}", new_host.name));
+                    self.selected_host_index = self.all_hosts().len().saturating_sub(1);
+                }
+            }
+        }
 
-        self.status_message = Some(format!(
-            "Added host: {} (edit config to customize)",
-            new_host.name
-        ));
-
-        // Select the new host
-        self.selected_host_index = self.all_hosts().len().saturating_sub(1);
+        self.host_edit_visible = false;
+        self.host_edit_is_new = false;
+        self.host_edit_draft = None;
+        self.host_edit_default = None;
+        self.editing_detail = false;
+        self.temp_edit_buffer.clear();
 
         Ok(())
+    }
+
+    fn host_is_default(&self, draft: &HostConfig, default_host: &HostConfig) -> bool {
+        draft.name == default_host.name
+            && draft.hostname == default_host.hostname
+            && draft.port == default_host.port
+            && draft.username == default_host.username
+            && self.auth_method_eq(&draft.auth, &default_host.auth)
+            && draft.remember_password == default_host.remember_password
+    }
+
+    fn auth_method_eq(
+        &self,
+        left: &crate::config::AuthMethod,
+        right: &crate::config::AuthMethod,
+    ) -> bool {
+        use crate::config::AuthMethod;
+
+        match (left, right) {
+            (AuthMethod::Password, AuthMethod::Password) => true,
+            (AuthMethod::Agent, AuthMethod::Agent) => true,
+            (
+                AuthMethod::KeyFile {
+                    path: left_path,
+                    passphrase_required: left_pass,
+                },
+                AuthMethod::KeyFile {
+                    path: right_path,
+                    passphrase_required: right_pass,
+                },
+            ) => left_path == right_path && left_pass == right_pass,
+            (
+                AuthMethod::Certificate {
+                    cert_path: left_cert,
+                    key_path: left_key,
+                },
+                AuthMethod::Certificate {
+                    cert_path: right_cert,
+                    key_path: right_key,
+                },
+            ) => left_cert == right_cert && left_key == right_key,
+            _ => false,
+        }
     }
 
     /// Connect to a host and open a session
@@ -3874,7 +3955,7 @@ impl App {
         let mut initial_value = None;
         let mut is_toggle = false;
 
-        if let Some(host) = self.selected_host() {
+        if let Some(host) = self.current_edit_host() {
             match self.detail_view_item_index {
                 0 => initial_value = Some(host.name.clone()),
                 1 => initial_value = Some(host.hostname.clone()),
@@ -3901,7 +3982,7 @@ impl App {
 
     /// Toggle auth method (simplified for inline edit)
     async fn toggle_auth_method(&mut self) -> Result<()> {
-        self.modify_selected_host(|host| {
+        self.modify_edit_host(|host| {
             use crate::config::AuthMethod;
             match host.auth {
                 AuthMethod::Password => {
@@ -3915,16 +3996,20 @@ impl App {
                 _ => host.auth = AuthMethod::Password,
             }
         });
-        self.config.save().await?;
+        if !self.host_edit_is_new {
+            self.config.save().await?;
+        }
         Ok(())
     }
 
     /// Toggle remember password
     async fn toggle_remember_password(&mut self) -> Result<()> {
-        self.modify_selected_host(|host| {
+        self.modify_edit_host(|host| {
             host.remember_password = !host.remember_password;
         });
-        self.config.save().await?;
+        if !self.host_edit_is_new {
+            self.config.save().await?;
+        }
         Ok(())
     }
 
@@ -3933,7 +4018,7 @@ impl App {
         let val = self.temp_edit_buffer.clone();
         let idx = self.detail_view_item_index;
 
-        self.modify_selected_host(|host| match idx {
+        self.modify_edit_host(|host| match idx {
             0 => host.name = val,
             1 => host.hostname = val,
             2 => {
@@ -3945,8 +4030,31 @@ impl App {
             _ => {}
         });
 
-        self.config.save().await?;
+        if !self.host_edit_is_new {
+            self.config.save().await?;
+        }
         Ok(())
+    }
+
+    fn current_edit_host(&self) -> Option<&HostConfig> {
+        if self.host_edit_is_new {
+            self.host_edit_draft.as_ref()
+        } else {
+            self.selected_host()
+        }
+    }
+
+    fn modify_edit_host<F>(&mut self, f: F)
+    where
+        F: FnOnce(&mut HostConfig),
+    {
+        if self.host_edit_is_new {
+            if let Some(host) = self.host_edit_draft.as_mut() {
+                f(host);
+            }
+        } else {
+            self.modify_selected_host(f);
+        }
     }
 
     /// Helper to modify the currently selected host

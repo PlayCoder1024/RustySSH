@@ -526,11 +526,17 @@ fn render_host_edit_overlay(frame: &mut Frame, state: &RenderState, area: Rect) 
     // Clear the area behind the overlay
     frame.render_widget(Clear, overlay_area);
 
+    let title_text = if state.host_edit_is_new {
+        "New Host"
+    } else {
+        "Edit Host"
+    };
+
     // Create overlay block with border
     let block = Block::default()
         .title(Line::from(vec![
             Span::styled(" 󰖷 ", Style::default().fg(theme.accent_primary())),
-            Span::styled("Edit Host", theme.title()),
+            Span::styled(title_text, theme.title()),
             Span::styled(" ", theme.title()),
         ]))
         .title_alignment(Alignment::Center)
@@ -547,7 +553,7 @@ fn render_host_edit_overlay(frame: &mut Frame, state: &RenderState, area: Rect) 
         .constraints([Constraint::Min(1), Constraint::Length(1)])
         .split(inner);
 
-    // Get selected host
+    // Get host for editing (draft for new host, selected host otherwise)
     let mut visible_hosts = Vec::new();
     for group in &state.config.groups {
         if group.expanded {
@@ -560,7 +566,13 @@ fn render_host_edit_overlay(frame: &mut Frame, state: &RenderState, area: Rect) 
         visible_hosts.push(host);
     }
 
-    if let Some(host) = visible_hosts.get(state.selected_host_index) {
+    let edit_host = if state.host_edit_is_new {
+        state.host_edit_draft.as_ref()
+    } else {
+        visible_hosts.get(state.selected_host_index).copied()
+    };
+
+    if let Some(host) = edit_host {
         let auth_str = match &host.auth {
             crate::config::AuthMethod::Password => "Password".to_string(),
             crate::config::AuthMethod::KeyFile { .. } => "Key File".to_string(),
@@ -586,10 +598,15 @@ fn render_host_edit_overlay(frame: &mut Frame, state: &RenderState, area: Rect) 
 
         let mut lines = Vec::new();
         lines.push(Line::from(""));
+        let display_name = if host.name.is_empty() {
+            "Unnamed Host".to_string()
+        } else {
+            host.name.clone()
+        };
         lines.push(Line::from(vec![
             Span::styled("Editing ", theme.text_dim()),
             Span::styled(
-                host.name.clone(),
+                display_name,
                 Style::default()
                     .fg(theme.fg_bright())
                     .add_modifier(Modifier::BOLD),
@@ -652,13 +669,18 @@ fn render_host_edit_overlay(frame: &mut Frame, state: &RenderState, area: Rect) 
             Span::styled(":Delete", theme.text_dim()),
         ])
     } else {
+        let close_label = if state.host_edit_is_new {
+            "Finish"
+        } else {
+            "Close"
+        };
         Line::from(vec![
             Span::styled("Enter", theme.key_hint()),
             Span::styled(":Edit/Toggle  ", theme.text_dim()),
             Span::styled("↑↓", theme.key_hint()),
             Span::styled(":Navigate  ", theme.text_dim()),
             Span::styled("Esc", theme.key_hint()),
-            Span::styled(":Close", theme.text_dim()),
+            Span::styled(format!(":{}", close_label), theme.text_dim()),
         ])
     };
     let hints_para = Paragraph::new(hints).alignment(Alignment::Center);
@@ -1237,7 +1259,7 @@ fn render_details_panel(frame: &mut Frame, app: &App, area: Rect) {
         Line::from(vec![
             Span::styled("  ", theme.text_dim()),
             Span::styled("n", theme.key_hint()),
-            Span::styled("     New connection", theme.text()),
+            Span::styled("     New connection (panel)", theme.text()),
         ]),
         Line::from(vec![
             Span::styled("  ", theme.text_dim()),

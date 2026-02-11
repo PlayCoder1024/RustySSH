@@ -139,7 +139,7 @@ pub fn render(frame: &mut Frame, app: &App, area: Rect) {
                 .fg(theme.fg_bright()),
         )]),
         Line::from(""),
-        create_help_line("n", "New connection", theme),
+        create_help_line("n", "New connection (panel)", theme),
         create_help_line("e", "Edit connection (panel)", theme),
         create_help_line("E", "Edit config in editor", theme),
         create_help_line("d", "Delete connection", theme),
