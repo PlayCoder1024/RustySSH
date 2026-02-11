@@ -100,6 +100,10 @@ pub struct RenderState {
     pub host_search_results: Vec<usize>,
     /// Host search selected index
     pub host_search_selected: usize,
+    /// Delete confirm overlay visible (connections view)
+    pub delete_confirm_visible: bool,
+    /// Host id pending deletion confirmation
+    pub delete_confirm_host_id: Option<Uuid>,
     /// Settings view category index
     pub settings_category: usize,
     /// Settings view item index within category
@@ -279,6 +283,10 @@ pub struct App {
     pub host_search_results: Vec<usize>,
     /// Host search selected index
     pub host_search_selected: usize,
+    /// Delete confirm overlay visible (connections view)
+    pub delete_confirm_visible: bool,
+    /// Host id pending deletion confirmation
+    pub delete_confirm_host_id: Option<Uuid>,
     /// Settings view - selected category index
     pub settings_category: usize,
     /// Settings view - selected item within category
@@ -391,6 +399,8 @@ impl App {
             host_search_query: String::new(),
             host_search_results: Vec::new(),
             host_search_selected: 0,
+            delete_confirm_visible: false,
+            delete_confirm_host_id: None,
             settings_category: 0,
             settings_item: 0,
             settings_dropdown_open: false,
@@ -672,6 +682,8 @@ impl App {
                     host_search_query: self.host_search_query.clone(),
                     host_search_results: self.host_search_results.clone(),
                     host_search_selected: self.host_search_selected,
+                    delete_confirm_visible: self.delete_confirm_visible,
+                    delete_confirm_host_id: self.delete_confirm_host_id,
                     settings_category: self.settings_category,
                     settings_item: self.settings_item,
                     settings_dropdown_open: self.settings_dropdown_open,
@@ -1069,6 +1081,10 @@ impl App {
         use crossterm::event::MouseButton;
         use MouseEventKind::*;
 
+        if self.delete_confirm_visible {
+            return Ok(());
+        }
+
         match mouse.kind {
             // Mouse button down - start selection
             Down(MouseButton::Left) => {
@@ -1225,6 +1241,10 @@ impl App {
     }
 
     async fn handle_connections_key(&mut self, key: crossterm::event::KeyEvent) -> Result<()> {
+        if self.delete_confirm_visible {
+            return self.handle_delete_confirm_key(key).await;
+        }
+
         // Handle search overlay input first
         if self.host_search_visible {
             return self.handle_host_search_key(key).await;
@@ -1306,8 +1326,13 @@ impl App {
                 self.edit_config().await?;
             }
             KeyCode::Char('d') => {
-                // Delete selected host
-                self.delete_selected_host().await?;
+                // Open delete confirmation for selected host
+                if let Some(host_id) = self.selected_host().map(|host| host.id) {
+                    self.delete_confirm_visible = true;
+                    self.delete_confirm_host_id = Some(host_id);
+                } else {
+                    self.status_message = Some("No host to delete".to_string());
+                }
             }
             KeyCode::Esc => {
                 // Cancel pending connection if any
@@ -1375,6 +1400,27 @@ impl App {
                 self.host_search_query.pop();
                 self.update_host_search_results();
                 self.host_search_selected = 0;
+            }
+            _ => {}
+        }
+        Ok(())
+    }
+
+    /// Handle keyboard input in delete confirmation overlay
+    async fn handle_delete_confirm_key(&mut self, key: crossterm::event::KeyEvent) -> Result<()> {
+        match key.code {
+            KeyCode::Enter | KeyCode::Char('y') => {
+                if let Some(host_id) = self.delete_confirm_host_id {
+                    self.delete_host_by_id(host_id).await?;
+                } else {
+                    self.delete_selected_host().await?;
+                }
+                self.delete_confirm_visible = false;
+                self.delete_confirm_host_id = None;
+            }
+            KeyCode::Esc | KeyCode::Char('n') => {
+                self.delete_confirm_visible = false;
+                self.delete_confirm_host_id = None;
             }
             _ => {}
         }
@@ -1481,43 +1527,47 @@ impl App {
             return Ok(());
         }
 
-        // Find which list the selected host is in
-        let mut idx = 0;
+        if let Some(host_id) = self.selected_host().map(|host| host.id) {
+            self.delete_host_by_id(host_id).await?;
+        } else {
+            self.status_message = Some("No host to delete".to_string());
+        }
 
+        Ok(())
+    }
+
+    async fn delete_host_by_id(&mut self, host_id: Uuid) -> Result<()> {
         // Check group hosts
         for group in &mut self.config.groups {
-            if group.expanded {
-                for i in 0..group.hosts.len() {
-                    if idx == self.selected_host_index {
-                        let removed = group.hosts.remove(i);
-                        self.config.save().await?;
-                        self.status_message = Some(format!("Deleted host: {}", removed.name));
-                        // Adjust selection
-                        let total = self.all_hosts().len();
-                        if self.selected_host_index >= total && total > 0 {
-                            self.selected_host_index = total - 1;
-                        }
-                        return Ok(());
-                    }
-                    idx += 1;
-                }
+            if let Some(idx) = group.hosts.iter().position(|host| host.id == host_id) {
+                let removed = group.hosts.remove(idx);
+                self.config.save().await?;
+                self.status_message = Some(format!("Deleted host: {}", removed.name));
+                self.clamp_selected_host_index();
+                return Ok(());
             }
         }
 
         // Check ungrouped hosts
-        let ungrouped_idx = self.selected_host_index - idx;
-        if ungrouped_idx < self.config.hosts.len() {
-            let removed = self.config.hosts.remove(ungrouped_idx);
+        if let Some(idx) = self.config.hosts.iter().position(|host| host.id == host_id) {
+            let removed = self.config.hosts.remove(idx);
             self.config.save().await?;
             self.status_message = Some(format!("Deleted host: {}", removed.name));
-            // Adjust selection
-            let total = self.all_hosts().len();
-            if self.selected_host_index >= total && total > 0 {
-                self.selected_host_index = total - 1;
-            }
+            self.clamp_selected_host_index();
+            return Ok(());
         }
 
+        self.status_message = Some("Host not found".to_string());
         Ok(())
+    }
+
+    fn clamp_selected_host_index(&mut self) {
+        let total = self.all_hosts().len();
+        if total == 0 {
+            self.selected_host_index = 0;
+        } else if self.selected_host_index >= total {
+            self.selected_host_index = total - 1;
+        }
     }
 
     /// Quick add a new host with minimal prompts

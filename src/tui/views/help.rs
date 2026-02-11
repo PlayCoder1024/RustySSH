@@ -142,6 +142,8 @@ pub fn render(frame: &mut Frame, app: &App, area: Rect) {
         create_help_line("n", "New connection", theme),
         create_help_line("e", "Edit connection", theme),
         create_help_line("d", "Delete connection", theme),
+        create_help_line("Enter/y", "Confirm delete", theme),
+        create_help_line("Esc/n", "Cancel delete", theme),
         create_help_line("Enter", "Connect to selected", theme),
         Line::from(""),
         Line::from(vec![Span::styled(

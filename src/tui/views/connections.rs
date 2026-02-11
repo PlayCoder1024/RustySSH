@@ -3,6 +3,7 @@
 use crate::app::{App, RenderState};
 use ratatui::prelude::*;
 use ratatui::widgets::{Block, Borders, List, ListItem, Padding, Paragraph};
+use uuid::Uuid;
 
 /// Render the connections view with RenderState
 pub fn render_state(frame: &mut Frame, state: &RenderState, area: Rect) {
@@ -47,6 +48,10 @@ pub fn render_state(frame: &mut Frame, state: &RenderState, area: Rect) {
     // Render host search overlay if searching
     if state.host_search_visible {
         render_host_search_overlay(frame, state, area);
+    }
+
+    if state.delete_confirm_visible {
+        render_delete_confirm_overlay(frame, state, area);
     }
 }
 
@@ -416,6 +421,111 @@ fn render_host_search_overlay(frame: &mut Frame, state: &RenderState, area: Rect
     ]);
     let hints_para = Paragraph::new(hints).alignment(Alignment::Center);
     frame.render_widget(hints_para, chunks[2]);
+}
+
+/// Render delete confirmation overlay for connections view
+fn render_delete_confirm_overlay(frame: &mut Frame, state: &RenderState, area: Rect) {
+    use ratatui::widgets::Clear;
+
+    let theme = &state.theme;
+
+    // Calculate overlay size and position (centered)
+    let width = 60u16.min(area.width.saturating_sub(4));
+    let height = 9u16.min(area.height.saturating_sub(4));
+    let x = area.x + (area.width.saturating_sub(width)) / 2;
+    let y = area.y + (area.height.saturating_sub(height)) / 2;
+    let overlay_area = Rect::new(x, y, width, height);
+
+    // Clear the area behind the overlay
+    frame.render_widget(Clear, overlay_area);
+
+    // Create overlay block with border
+    let block = Block::default()
+        .title(Line::from(vec![
+            Span::styled(" 󰆴 ", Style::default().fg(theme.accent_warning())),
+            Span::styled("Delete Host", theme.title()),
+            Span::styled(" ", theme.title()),
+        ]))
+        .title_alignment(Alignment::Center)
+        .borders(Borders::ALL)
+        .border_style(Style::default().fg(theme.accent_primary()))
+        .style(Style::default().bg(theme.bg_panel()));
+
+    let inner = block.inner(overlay_area);
+    frame.render_widget(block, overlay_area);
+
+    // Split inner area: content + hints
+    let chunks = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([Constraint::Min(1), Constraint::Length(1)])
+        .split(inner);
+
+    let (host_name, host_conn) = state
+        .delete_confirm_host_id
+        .and_then(|host_id| find_host_by_id(&state.config, host_id))
+        .map(|host| (host.name.as_str(), host.connection_string()))
+        .unwrap_or(("Unknown host", String::new()));
+
+    let mut content = vec![
+        Line::from(""),
+        Line::from(vec![
+            Span::styled("Delete ", theme.text()),
+            Span::styled(
+                host_name,
+                Style::default()
+                    .fg(theme.accent_error())
+                    .add_modifier(Modifier::BOLD),
+            ),
+            Span::styled("?", theme.text()),
+        ]),
+    ];
+
+    if !host_conn.is_empty() {
+        content.push(Line::from(vec![Span::styled(host_conn, theme.text_dim())]));
+    }
+
+    content.push(Line::from(vec![Span::styled(
+        "This will remove it from your config",
+        theme.text_dim(),
+    )]));
+
+    let paragraph = Paragraph::new(content).alignment(Alignment::Center);
+    frame.render_widget(paragraph, chunks[0]);
+
+    // Hints at bottom
+    let hints = Line::from(vec![
+        Span::styled("Enter", theme.key_hint()),
+        Span::styled("/", theme.text_dim()),
+        Span::styled("y", theme.key_hint()),
+        Span::styled(":Delete  ", theme.text_dim()),
+        Span::styled("Esc", theme.key_hint()),
+        Span::styled("/", theme.text_dim()),
+        Span::styled("n", theme.key_hint()),
+        Span::styled(":Cancel", theme.text_dim()),
+    ]);
+    let hints_para = Paragraph::new(hints).alignment(Alignment::Center);
+    frame.render_widget(hints_para, chunks[1]);
+}
+
+fn find_host_by_id<'a>(
+    config: &'a crate::config::Config,
+    host_id: Uuid,
+) -> Option<&'a crate::config::HostConfig> {
+    for group in &config.groups {
+        for host in &group.hosts {
+            if host.id == host_id {
+                return Some(host);
+            }
+        }
+    }
+
+    for host in &config.hosts {
+        if host.id == host_id {
+            return Some(host);
+        }
+    }
+
+    None
 }
 
 fn render_host_list_state(frame: &mut Frame, state: &RenderState, area: Rect) {
