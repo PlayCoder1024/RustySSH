@@ -107,7 +107,7 @@ fn render_status_bar(frame: &mut Frame, app: &App, area: Rect) {
     // Left side: View-specific hints
     let hints = match app.view {
         View::Connections => {
-            "󰌑 Enter:Connect  e:Edit  n:New  d:Delete  t:Tunnels  f:SFTP  k:Keys  ?:Help"
+            "󰌑 Enter:Connect  e:Edit  E:Editor  n:New  d:Delete  t:Tunnels  f:SFTP  k:Keys  ?:Help"
         }
         View::Session => "󰌑 C-S-Y:Copy  C-S-I:Paste  Ctrl+B:Prefix(f:Find)",
         View::Sftp => {
@@ -178,7 +178,7 @@ fn render_status_bar_state(frame: &mut Frame, state: &RenderState, area: Rect) {
     // Left side: View-specific hints (using dynamic keyboard icon)
     let hints = match state.view {
         View::Connections => format!(
-            "{}Enter:Connect  e:Edit  n:New  d:Delete  t:Tunnels  f:SFTP  K:Keys  ?:Help",
+            "{}Enter:Connect  e:Edit  E:Editor  n:New  d:Delete  t:Tunnels  f:SFTP  K:Keys  ?:Help",
             kb
         ),
         View::Session => {

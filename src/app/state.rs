@@ -100,6 +100,8 @@ pub struct RenderState {
     pub host_search_results: Vec<usize>,
     /// Host search selected index
     pub host_search_selected: usize,
+    /// Host edit overlay visible (connections view)
+    pub host_edit_visible: bool,
     /// Delete confirm overlay visible (connections view)
     pub delete_confirm_visible: bool,
     /// Host id pending deletion confirmation
@@ -283,6 +285,8 @@ pub struct App {
     pub host_search_results: Vec<usize>,
     /// Host search selected index
     pub host_search_selected: usize,
+    /// Host edit overlay visible (connections view)
+    pub host_edit_visible: bool,
     /// Delete confirm overlay visible (connections view)
     pub delete_confirm_visible: bool,
     /// Host id pending deletion confirmation
@@ -399,6 +403,7 @@ impl App {
             host_search_query: String::new(),
             host_search_results: Vec::new(),
             host_search_selected: 0,
+            host_edit_visible: false,
             delete_confirm_visible: false,
             delete_confirm_host_id: None,
             settings_category: 0,
@@ -682,6 +687,7 @@ impl App {
                     host_search_query: self.host_search_query.clone(),
                     host_search_results: self.host_search_results.clone(),
                     host_search_selected: self.host_search_selected,
+                    host_edit_visible: self.host_edit_visible,
                     delete_confirm_visible: self.delete_confirm_visible,
                     delete_confirm_host_id: self.delete_confirm_host_id,
                     settings_category: self.settings_category,
@@ -1085,6 +1091,10 @@ impl App {
             return Ok(());
         }
 
+        if self.host_edit_visible {
+            return Ok(());
+        }
+
         match mouse.kind {
             // Mouse button down - start selection
             Down(MouseButton::Left) => {
@@ -1245,6 +1255,10 @@ impl App {
             return self.handle_delete_confirm_key(key).await;
         }
 
+        if self.host_edit_visible {
+            return self.handle_host_edit_key(key).await;
+        }
+
         // Handle search overlay input first
         if self.host_search_visible {
             return self.handle_host_search_key(key).await;
@@ -1322,6 +1336,18 @@ impl App {
                 self.add_quick_host().await?;
             }
             KeyCode::Char('e') => {
+                // Open host edit overlay
+                if self.selected_host().is_some() {
+                    self.host_edit_visible = true;
+                    self.detail_view_focused = false;
+                    self.detail_view_item_index = 0;
+                    self.editing_detail = false;
+                    self.temp_edit_buffer.clear();
+                } else {
+                    self.status_message = Some("No host to edit".to_string());
+                }
+            }
+            KeyCode::Char('E') => {
                 // Edit selected host - open config file
                 self.edit_config().await?;
             }
@@ -1400,6 +1426,51 @@ impl App {
                 self.host_search_query.pop();
                 self.update_host_search_results();
                 self.host_search_selected = 0;
+            }
+            _ => {}
+        }
+        Ok(())
+    }
+
+    async fn handle_host_edit_key(&mut self, key: crossterm::event::KeyEvent) -> Result<()> {
+        if self.editing_detail {
+            match key.code {
+                KeyCode::Esc => {
+                    self.editing_detail = false;
+                    self.temp_edit_buffer.clear();
+                }
+                KeyCode::Enter => {
+                    self.save_detail_edit().await?;
+                    self.editing_detail = false;
+                    self.temp_edit_buffer.clear();
+                }
+                KeyCode::Backspace => {
+                    self.temp_edit_buffer.pop();
+                }
+                KeyCode::Char(c) => {
+                    self.temp_edit_buffer.push(c);
+                }
+                _ => {}
+            }
+            return Ok(());
+        }
+
+        match key.code {
+            KeyCode::Esc => {
+                self.host_edit_visible = false;
+            }
+            KeyCode::Up | KeyCode::Char('k') => {
+                if self.detail_view_item_index > 0 {
+                    self.detail_view_item_index -= 1;
+                }
+            }
+            KeyCode::Down | KeyCode::Char('j') => {
+                if self.detail_view_item_index < 5 {
+                    self.detail_view_item_index += 1;
+                }
+            }
+            KeyCode::Enter | KeyCode::Char(' ') => {
+                self.start_detail_edit().await?;
             }
             _ => {}
         }

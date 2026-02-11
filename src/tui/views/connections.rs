@@ -50,6 +50,10 @@ pub fn render_state(frame: &mut Frame, state: &RenderState, area: Rect) {
         render_host_search_overlay(frame, state, area);
     }
 
+    if state.host_edit_visible {
+        render_host_edit_overlay(frame, state, area);
+    }
+
     if state.delete_confirm_visible {
         render_delete_confirm_overlay(frame, state, area);
     }
@@ -503,6 +507,160 @@ fn render_delete_confirm_overlay(frame: &mut Frame, state: &RenderState, area: R
         Span::styled("n", theme.key_hint()),
         Span::styled(":Cancel", theme.text_dim()),
     ]);
+    let hints_para = Paragraph::new(hints).alignment(Alignment::Center);
+    frame.render_widget(hints_para, chunks[1]);
+}
+
+fn render_host_edit_overlay(frame: &mut Frame, state: &RenderState, area: Rect) {
+    use ratatui::widgets::Clear;
+
+    let theme = &state.theme;
+
+    // Calculate overlay size and position (centered)
+    let width = 68u16.min(area.width.saturating_sub(4));
+    let height = 13u16.min(area.height.saturating_sub(4));
+    let x = area.x + (area.width.saturating_sub(width)) / 2;
+    let y = area.y + (area.height.saturating_sub(height)) / 2;
+    let overlay_area = Rect::new(x, y, width, height);
+
+    // Clear the area behind the overlay
+    frame.render_widget(Clear, overlay_area);
+
+    // Create overlay block with border
+    let block = Block::default()
+        .title(Line::from(vec![
+            Span::styled(" 󰖷 ", Style::default().fg(theme.accent_primary())),
+            Span::styled("Edit Host", theme.title()),
+            Span::styled(" ", theme.title()),
+        ]))
+        .title_alignment(Alignment::Center)
+        .borders(Borders::ALL)
+        .border_style(Style::default().fg(theme.accent_primary()))
+        .style(Style::default().bg(theme.bg_panel()));
+
+    let inner = block.inner(overlay_area);
+    frame.render_widget(block, overlay_area);
+
+    // Split inner area: content + hints
+    let chunks = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([Constraint::Min(1), Constraint::Length(1)])
+        .split(inner);
+
+    // Get selected host
+    let mut visible_hosts = Vec::new();
+    for group in &state.config.groups {
+        if group.expanded {
+            for host in &group.hosts {
+                visible_hosts.push(host);
+            }
+        }
+    }
+    for host in &state.config.hosts {
+        visible_hosts.push(host);
+    }
+
+    if let Some(host) = visible_hosts.get(state.selected_host_index) {
+        let auth_str = match &host.auth {
+            crate::config::AuthMethod::Password => "Password".to_string(),
+            crate::config::AuthMethod::KeyFile { .. } => "Key File".to_string(),
+            crate::config::AuthMethod::Agent => "Agent".to_string(),
+            crate::config::AuthMethod::Certificate { .. } => "Certificate".to_string(),
+        };
+
+        let items = vec![
+            ("Name", host.name.clone()),
+            ("Hostname", host.hostname.clone()),
+            ("Port", host.port.to_string()),
+            ("User", host.username.clone()),
+            ("Auth Method", auth_str),
+            (
+                "Remember Pwd",
+                if host.remember_password {
+                    "Yes".to_string()
+                } else {
+                    "No".to_string()
+                },
+            ),
+        ];
+
+        let mut lines = Vec::new();
+        lines.push(Line::from(""));
+        lines.push(Line::from(vec![
+            Span::styled("Editing ", theme.text_dim()),
+            Span::styled(
+                host.name.clone(),
+                Style::default()
+                    .fg(theme.fg_bright())
+                    .add_modifier(Modifier::BOLD),
+            ),
+        ]));
+        lines.push(Line::from(""));
+
+        for (i, (label, value)) in items.iter().enumerate() {
+            let is_selected = i == state.detail_view_item_index;
+            let is_editing = is_selected && state.editing_detail;
+            let row_bg = if is_selected {
+                theme.bg_selected()
+            } else {
+                theme.bg_panel()
+            };
+
+            let display_value = if is_editing {
+                format!("{}|", state.temp_edit_buffer)
+            } else {
+                value.to_string()
+            };
+
+            let label_style = if is_selected {
+                Style::default()
+                    .fg(theme.accent_primary())
+                    .bg(row_bg)
+                    .add_modifier(Modifier::BOLD)
+            } else {
+                Style::default().fg(theme.fg_dim()).bg(row_bg)
+            };
+            let value_style = if is_selected {
+                Style::default().fg(theme.fg_bright()).bg(row_bg)
+            } else {
+                theme.text().bg(row_bg)
+            };
+
+            lines.push(Line::from(vec![
+                Span::styled(format!("{:12}", label), label_style),
+                Span::styled(" │ ", theme.text_dim().bg(row_bg)),
+                Span::styled(display_value, value_style),
+            ]));
+        }
+
+        let paragraph = Paragraph::new(lines);
+        frame.render_widget(paragraph, chunks[0]);
+    } else {
+        let empty = Paragraph::new("No host selected")
+            .style(theme.text_dim())
+            .alignment(Alignment::Center);
+        frame.render_widget(empty, chunks[0]);
+    }
+
+    let hints = if state.editing_detail {
+        Line::from(vec![
+            Span::styled("Enter", theme.key_hint()),
+            Span::styled(":Save  ", theme.text_dim()),
+            Span::styled("Esc", theme.key_hint()),
+            Span::styled(":Cancel  ", theme.text_dim()),
+            Span::styled("Backspace", theme.key_hint()),
+            Span::styled(":Delete", theme.text_dim()),
+        ])
+    } else {
+        Line::from(vec![
+            Span::styled("Enter", theme.key_hint()),
+            Span::styled(":Edit/Toggle  ", theme.text_dim()),
+            Span::styled("↑↓", theme.key_hint()),
+            Span::styled(":Navigate  ", theme.text_dim()),
+            Span::styled("Esc", theme.key_hint()),
+            Span::styled(":Close", theme.text_dim()),
+        ])
+    };
     let hints_para = Paragraph::new(hints).alignment(Alignment::Center);
     frame.render_widget(hints_para, chunks[1]);
 }
@@ -1084,7 +1242,12 @@ fn render_details_panel(frame: &mut Frame, app: &App, area: Rect) {
         Line::from(vec![
             Span::styled("  ", theme.text_dim()),
             Span::styled("e", theme.key_hint()),
-            Span::styled("     Edit selected", theme.text()),
+            Span::styled("     Edit selected (panel)", theme.text()),
+        ]),
+        Line::from(vec![
+            Span::styled("  ", theme.text_dim()),
+            Span::styled("E", theme.key_hint()),
+            Span::styled("     Edit config in editor", theme.text()),
         ]),
         Line::from(vec![
             Span::styled("  ", theme.text_dim()),
