@@ -97,6 +97,26 @@ pub enum ProxyConfig {
     },
 }
 
+/// Tunnel reference (by name or inline config)
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(untagged)]
+pub enum TunnelRef {
+    /// Reference by tunnel name
+    Name(String),
+    /// Inline tunnel configuration (legacy or convenience)
+    Inline(TunnelConfig),
+}
+
+impl TunnelRef {
+    /// Get the tunnel name from the reference
+    pub fn name(&self) -> &str {
+        match self {
+            TunnelRef::Name(name) => name,
+            TunnelRef::Inline(cfg) => cfg.name(),
+        }
+    }
+}
+
 /// SSH host configuration
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct HostConfig {
@@ -123,7 +143,7 @@ pub struct HostConfig {
     pub tags: Vec<String>,
     /// Configured tunnels
     #[serde(default)]
-    pub tunnels: Vec<TunnelConfig>,
+    pub tunnels: Vec<TunnelRef>,
     /// Commands to run on connect
     #[serde(default)]
     pub startup_commands: Vec<String>,
@@ -230,7 +250,7 @@ fn default_true() -> bool {
 }
 
 /// Tunnel configuration
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum TunnelConfig {
     /// Local port forwarding (-L)
@@ -277,4 +297,58 @@ pub enum TunnelConfig {
         #[serde(default)]
         auto_start: bool,
     },
+}
+
+impl TunnelConfig {
+    /// Get the tunnel name
+    pub fn name(&self) -> &str {
+        match self {
+            TunnelConfig::Local { name, .. } => name,
+            TunnelConfig::Remote { name, .. } => name,
+            TunnelConfig::Dynamic { name, .. } => name,
+        }
+    }
+
+    /// Get the auto-start flag
+    pub fn auto_start(&self) -> bool {
+        match self {
+            TunnelConfig::Local { auto_start, .. } => *auto_start,
+            TunnelConfig::Remote { auto_start, .. } => *auto_start,
+            TunnelConfig::Dynamic { auto_start, .. } => *auto_start,
+        }
+    }
+
+    /// Get a short type label
+    pub fn type_label(&self) -> &'static str {
+        match self {
+            TunnelConfig::Local { .. } => "Local",
+            TunnelConfig::Remote { .. } => "Remote",
+            TunnelConfig::Dynamic { .. } => "Dynamic",
+        }
+    }
+
+    /// Human-readable configuration summary
+    pub fn description(&self) -> String {
+        match self {
+            TunnelConfig::Local {
+                bind_addr,
+                bind_port,
+                remote_host,
+                remote_port,
+                ..
+            } => format!("{}:{} → {}:{}", bind_addr, bind_port, remote_host, remote_port),
+            TunnelConfig::Remote {
+                remote_addr,
+                remote_port,
+                local_host,
+                local_port,
+                ..
+            } => format!("{}:{} → {}:{}", remote_addr, remote_port, local_host, local_port),
+            TunnelConfig::Dynamic {
+                bind_addr,
+                bind_port,
+                ..
+            } => format!("{}:{}", bind_addr, bind_port),
+        }
+    }
 }

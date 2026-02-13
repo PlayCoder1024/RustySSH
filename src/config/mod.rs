@@ -3,7 +3,9 @@
 mod hosts;
 mod settings;
 
-pub use hosts::{AuthMethod, HostConfig, HostGroup, JumpHostRef, ProxyConfig};
+pub use hosts::{
+    AuthMethod, HostConfig, HostGroup, JumpHostRef, ProxyConfig, TunnelConfig, TunnelRef,
+};
 pub use settings::{LogSettings, Settings};
 
 use anyhow::Result;
@@ -16,6 +18,9 @@ pub struct Config {
     /// Application settings
     #[serde(default)]
     pub settings: Settings,
+    /// Global tunnel definitions
+    #[serde(default)]
+    pub tunnels: Vec<TunnelConfig>,
     /// Host groups
     #[serde(default)]
     pub groups: Vec<HostGroup>,
@@ -28,6 +33,7 @@ impl Default for Config {
     fn default() -> Self {
         Self {
             settings: Settings::default(),
+            tunnels: vec![],
             groups: vec![
                 HostGroup {
                     name: "Production".to_string(),
@@ -60,7 +66,8 @@ impl Config {
 
         if path.exists() {
             let content = tokio::fs::read_to_string(&path).await?;
-            let config: Config = serde_yaml::from_str(&content)?;
+            let mut config: Config = serde_yaml::from_str(&content)?;
+            config.normalize_tunnel_refs();
             Ok(config)
         } else {
             let config = Config::default();
@@ -75,7 +82,8 @@ impl Config {
 
         if path.exists() {
             let content = std::fs::read_to_string(&path)?;
-            let config: Config = serde_yaml::from_str(&content)?;
+            let mut config: Config = serde_yaml::from_str(&content)?;
+            config.normalize_tunnel_refs();
             Ok(config)
         } else {
             // Return default without saving (async save will happen later)
@@ -95,6 +103,77 @@ impl Config {
         let content = serde_yaml::to_string(self)?;
         tokio::fs::write(&path, content).await?;
         Ok(())
+    }
+
+    /// Normalize inline tunnel references into the global tunnel list
+    /// Converts host tunnel refs into name-only references.
+    pub fn normalize_tunnel_refs(&mut self) {
+        let mut known = std::collections::HashSet::new();
+        for t in &self.tunnels {
+            known.insert(t.name().to_string());
+        }
+
+        // Normalize group hosts
+        for group in &mut self.groups {
+            for host in &mut group.hosts {
+                let refs = std::mem::take(&mut host.tunnels);
+                let mut normalized = Vec::new();
+                for tref in refs {
+                    match tref {
+                        TunnelRef::Name(name) => {
+                            normalized.push(TunnelRef::Name(name));
+                        }
+                        TunnelRef::Inline(cfg) => {
+                            let name = cfg.name().to_string();
+                            if !known.contains(&name) {
+                                self.tunnels.push(cfg);
+                                known.insert(name.clone());
+                            }
+                            normalized.push(TunnelRef::Name(name));
+                        }
+                    }
+                }
+                host.tunnels = normalized;
+            }
+        }
+
+        // Normalize ungrouped hosts
+        for host in &mut self.hosts {
+            let refs = std::mem::take(&mut host.tunnels);
+            let mut normalized = Vec::new();
+            for tref in refs {
+                match tref {
+                    TunnelRef::Name(name) => {
+                        normalized.push(TunnelRef::Name(name));
+                    }
+                    TunnelRef::Inline(cfg) => {
+                        let name = cfg.name().to_string();
+                        if !known.contains(&name) {
+                            self.tunnels.push(cfg);
+                            known.insert(name.clone());
+                        }
+                        normalized.push(TunnelRef::Name(name));
+                    }
+                }
+            }
+            host.tunnels = normalized;
+        }
+    }
+
+    /// Find a tunnel by name
+    pub fn find_tunnel(&self, name: &str) -> Option<&TunnelConfig> {
+        self.tunnels.iter().find(|t| t.name() == name)
+    }
+
+    /// Resolve tunnels configured for a host
+    pub fn resolve_host_tunnels<'a>(
+        &'a self,
+        host: &'a HostConfig,
+    ) -> Vec<&'a TunnelConfig> {
+        host.tunnels
+            .iter()
+            .filter_map(|t| self.find_tunnel(t.name()))
+            .collect()
     }
 
     /// Get all hosts (grouped and ungrouped)

@@ -128,11 +128,42 @@ proxy: !JumpHost               # SSH jump host
 proxy: !Socks5                 # SOCKS5 proxy
   address: 127.0.0.1
   port: 1080
+  username: proxyuser          # optional
+  password: proxypass          # optional
+proxy: !Socks4                 # SOCKS4 proxy
+  address: 127.0.0.1
+  port: 1080
+  user_id: socks4-user         # optional
 proxy: !Http                   # HTTP CONNECT proxy
   address: proxy.example.com
   port: 8080
+  username: proxyuser          # optional
+  password: proxypass          # optional
 proxy: !ProxyCommand           # Custom command
   command: "nc -x localhost:1080 %h %p"
+```
+
+### Tunnel Configuration
+
+```yaml
+tunnels:
+  - type: local
+    name: db-forward
+    bind_addr: 127.0.0.1
+    bind_port: 3306
+    remote_host: db.prod
+    remote_port: 3306
+    auto_start: true
+  - type: dynamic
+    name: socks
+    bind_addr: 127.0.0.1
+    bind_port: 1080
+
+hosts:
+  - name: app-server
+    hostname: 10.0.0.10
+    username: ubuntu
+    tunnels: [db-forward, socks]
 ```
 
 ## 📚 Documentation

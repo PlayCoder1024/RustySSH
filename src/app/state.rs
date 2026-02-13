@@ -106,6 +106,20 @@ pub struct RenderState {
     pub host_edit_is_new: bool,
     /// Draft host config for edit overlay (new host only)
     pub host_edit_draft: Option<HostConfig>,
+    /// Proxy edit overlay visible (connections view)
+    pub proxy_edit_visible: bool,
+    /// Selected field in proxy edit overlay
+    pub proxy_edit_field_index: usize,
+    /// Currently editing a proxy field
+    pub proxy_editing: bool,
+    /// Temporary buffer for proxy editing
+    pub proxy_temp_buffer: String,
+    /// Tunnel picker overlay visible (connections view)
+    pub tunnel_picker_visible: bool,
+    /// Selected index in tunnel picker list
+    pub tunnel_picker_index: usize,
+    /// Selected tunnel names in picker
+    pub tunnel_picker_selected: Vec<String>,
     /// Delete confirm overlay visible (connections view)
     pub delete_confirm_visible: bool,
     /// Host id pending deletion confirmation
@@ -128,10 +142,60 @@ pub struct RenderState {
     pub editing_detail: bool,
     /// Temporary buffer for editing
     pub temp_edit_buffer: String,
+    /// Selected tunnel index (tunnels view)
+    pub tunnel_selected_index: usize,
+    /// Tunnel edit overlay visible (tunnels view)
+    pub tunnel_edit_visible: bool,
+    /// Tunnel edit overlay is creating a new tunnel
+    pub tunnel_edit_is_new: bool,
+    /// Draft tunnel config for edit overlay
+    pub tunnel_edit_draft: Option<crate::config::TunnelConfig>,
+    /// Selected field in tunnel edit overlay
+    pub tunnel_edit_field_index: usize,
+    /// Currently editing a tunnel field
+    pub tunnel_editing: bool,
+    /// Temporary buffer for tunnel editing
+    pub tunnel_temp_buffer: String,
     /// SSH keys list
     pub ssh_keys: Vec<KeyInfoSnapshot>,
     // Animation state
     pub frame_count: usize,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum ProxyKind {
+    None,
+    JumpHost,
+    Socks5,
+    Socks4,
+    Http,
+    ProxyCommand,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum ProxyFieldKind {
+    Type,
+    Host,
+    Address,
+    Port,
+    Username,
+    Password,
+    UserId,
+    Command,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum TunnelFieldKind {
+    Name,
+    Type,
+    AutoStart,
+    BindAddr,
+    BindPort,
+    RemoteHost,
+    RemotePort,
+    RemoteAddr,
+    LocalHost,
+    LocalPort,
 }
 
 /// Snapshot of a file pane for rendering
@@ -197,6 +261,12 @@ pub struct ActiveChannel {
     pub input_tx: mpsc::UnboundedSender<Vec<u8>>,
 }
 
+/// Active tunnel handle for shutdown
+pub struct ActiveTunnel {
+    pub name: String,
+    pub shutdown: std::sync::mpsc::Sender<()>,
+}
+
 /// Main application struct
 pub struct App {
     /// Current view
@@ -211,6 +281,8 @@ pub struct App {
     pub connections: ConnectionPool,
     /// Active channels mapped by session ID
     pub channels: HashMap<Uuid, ActiveChannel>,
+    /// Auto-start tunnels mapped by host ID
+    pub autostart_tunnels: HashMap<Uuid, Vec<ActiveTunnel>>,
     /// Active session ID (if in session view)
     pub active_session: Option<Uuid>,
     /// Status message
@@ -297,6 +369,20 @@ pub struct App {
     pub host_edit_draft: Option<HostConfig>,
     /// Default host template for new host comparison
     pub host_edit_default: Option<HostConfig>,
+    /// Proxy edit overlay visible (connections view)
+    pub proxy_edit_visible: bool,
+    /// Selected field in proxy edit overlay
+    pub proxy_edit_field_index: usize,
+    /// Currently editing a proxy field
+    pub proxy_editing: bool,
+    /// Temporary buffer for proxy editing
+    pub proxy_temp_buffer: String,
+    /// Tunnel picker overlay visible (connections view)
+    pub tunnel_picker_visible: bool,
+    /// Selected index in tunnel picker list
+    pub tunnel_picker_index: usize,
+    /// Selected tunnel names in picker
+    pub tunnel_picker_selected: Vec<String>,
     /// Delete confirm overlay visible (connections view)
     pub delete_confirm_visible: bool,
     /// Host id pending deletion confirmation
@@ -317,6 +403,22 @@ pub struct App {
     pub editing_detail: bool,
     /// Temporary buffer for editing
     pub temp_edit_buffer: String,
+    /// Selected tunnel index in tunnels view
+    pub tunnel_selected_index: usize,
+    /// Tunnel edit overlay visible (tunnels view)
+    pub tunnel_edit_visible: bool,
+    /// Tunnel edit overlay is creating a new tunnel
+    pub tunnel_edit_is_new: bool,
+    /// Draft tunnel config for edit overlay
+    pub tunnel_edit_draft: Option<crate::config::TunnelConfig>,
+    /// Default tunnel template for new tunnel comparison
+    pub tunnel_edit_default: Option<crate::config::TunnelConfig>,
+    /// Selected field in tunnel edit overlay
+    pub tunnel_edit_field_index: usize,
+    /// Currently editing a tunnel field
+    pub tunnel_editing: bool,
+    /// Temporary buffer for tunnel editing
+    pub tunnel_temp_buffer: String,
     /// SSH Key Manager
     pub key_manager: crate::ssh::KeyManager,
     /// Last time keys were scanned
@@ -364,6 +466,7 @@ impl App {
             sessions: SessionManager::new(),
             connections: ConnectionPool::new(),
             channels: HashMap::new(),
+            autostart_tunnels: HashMap::new(),
             active_session: None,
             status_message: None,
             selected_host_index: 0,
@@ -417,6 +520,13 @@ impl App {
             host_edit_is_new: false,
             host_edit_draft: None,
             host_edit_default: None,
+            proxy_edit_visible: false,
+            proxy_edit_field_index: 0,
+            proxy_editing: false,
+            proxy_temp_buffer: String::new(),
+            tunnel_picker_visible: false,
+            tunnel_picker_index: 0,
+            tunnel_picker_selected: Vec::new(),
             delete_confirm_visible: false,
             delete_confirm_host_id: None,
             settings_category: 0,
@@ -427,6 +537,14 @@ impl App {
             detail_view_item_index: 0,
             editing_detail: false,
             temp_edit_buffer: String::new(),
+            tunnel_selected_index: 0,
+            tunnel_edit_visible: false,
+            tunnel_edit_is_new: false,
+            tunnel_edit_draft: None,
+            tunnel_edit_default: None,
+            tunnel_edit_field_index: 0,
+            tunnel_editing: false,
+            tunnel_temp_buffer: String::new(),
             key_manager: crate::ssh::KeyManager::new(),
             ssh_keys_last_scan: std::time::Instant::now(),
             last_click_time: None,
@@ -703,6 +821,13 @@ impl App {
                     host_edit_visible: self.host_edit_visible,
                     host_edit_is_new: self.host_edit_is_new,
                     host_edit_draft: self.host_edit_draft.clone(),
+                    proxy_edit_visible: self.proxy_edit_visible,
+                    proxy_edit_field_index: self.proxy_edit_field_index,
+                    proxy_editing: self.proxy_editing,
+                    proxy_temp_buffer: self.proxy_temp_buffer.clone(),
+                    tunnel_picker_visible: self.tunnel_picker_visible,
+                    tunnel_picker_index: self.tunnel_picker_index,
+                    tunnel_picker_selected: self.tunnel_picker_selected.clone(),
                     delete_confirm_visible: self.delete_confirm_visible,
                     delete_confirm_host_id: self.delete_confirm_host_id,
                     settings_category: self.settings_category,
@@ -715,6 +840,13 @@ impl App {
                     detail_view_item_index: self.detail_view_item_index,
                     editing_detail: self.editing_detail,
                     temp_edit_buffer: self.temp_edit_buffer.clone(),
+                    tunnel_selected_index: self.tunnel_selected_index,
+                    tunnel_edit_visible: self.tunnel_edit_visible,
+                    tunnel_edit_is_new: self.tunnel_edit_is_new,
+                    tunnel_edit_draft: self.tunnel_edit_draft.clone(),
+                    tunnel_edit_field_index: self.tunnel_edit_field_index,
+                    tunnel_editing: self.tunnel_editing,
+                    tunnel_temp_buffer: self.tunnel_temp_buffer.clone(),
                     ssh_keys: self
                         .key_manager
                         .list_keys()
@@ -939,10 +1071,22 @@ impl App {
             }
             AppEvent::SshDisconnected { session_id, reason } => {
                 self.status_message = Some(format!("Disconnected: {}", reason));
+                let host_id = self.sessions.get(session_id).map(|s| s.host_id);
                 self.channels.remove(&session_id);
                 self.sessions.remove(session_id);
                 // Remove from session order
                 self.session_order.retain(|&id| id != session_id);
+
+                if let Some(host_id) = host_id {
+                    let still_active = self
+                        .sessions
+                        .list()
+                        .iter()
+                        .any(|s| s.host_id == host_id);
+                    if !still_active {
+                        self.stop_autostart_tunnels(host_id);
+                    }
+                }
 
                 if self.active_session == Some(session_id) {
                     // Switch to another session if available
@@ -1063,6 +1207,10 @@ impl App {
 
                 Ok(true) // Start redraw
             }
+            AppEvent::TunnelStatus { message } => {
+                self.status_message = Some(message);
+                Ok(true)
+            }
             AppEvent::ConnectionResult {
                 host_id: _,
                 host_name,
@@ -1106,7 +1254,7 @@ impl App {
             return Ok(());
         }
 
-        if self.host_edit_visible {
+        if self.host_edit_visible || self.proxy_edit_visible || self.tunnel_picker_visible {
             return Ok(());
         }
 
@@ -1270,6 +1418,14 @@ impl App {
             return self.handle_delete_confirm_key(key).await;
         }
 
+        if self.proxy_edit_visible {
+            return self.handle_proxy_edit_key(key).await;
+        }
+
+        if self.tunnel_picker_visible {
+            return self.handle_tunnel_picker_key(key).await;
+        }
+
         if self.host_edit_visible {
             return self.handle_host_edit_key(key).await;
         }
@@ -1296,7 +1452,7 @@ impl App {
                 if host_count > 0 {
                     self.detail_view_focused = true;
                     // Reset if out of bounds (current fields = 6)
-                    if self.detail_view_item_index >= 6 {
+                    if self.detail_view_item_index >= 8 {
                         self.detail_view_item_index = 0;
                     }
                 }
@@ -1483,7 +1639,7 @@ impl App {
                 }
             }
             KeyCode::Down | KeyCode::Char('j') => {
-                if self.detail_view_item_index < 5 {
+                if self.detail_view_item_index < 7 {
                     self.detail_view_item_index += 1;
                 }
             }
@@ -1492,6 +1648,454 @@ impl App {
             }
             _ => {}
         }
+        Ok(())
+    }
+
+    fn open_proxy_edit(&mut self) {
+        self.proxy_edit_visible = true;
+        self.proxy_edit_field_index = 0;
+        self.proxy_editing = false;
+        self.proxy_temp_buffer.clear();
+    }
+
+    fn open_tunnel_picker(&mut self) {
+        self.tunnel_picker_visible = true;
+        self.tunnel_picker_index = 0;
+        let selected = if let Some(host) = self.current_edit_host() {
+            let mut names = Vec::new();
+            for tunnel in &self.config.tunnels {
+                if host.tunnels.iter().any(|t| t.name() == tunnel.name()) {
+                    names.push(tunnel.name().to_string());
+                }
+            }
+            names
+        } else {
+            Vec::new()
+        };
+        self.tunnel_picker_selected = selected;
+    }
+
+    async fn handle_proxy_edit_key(&mut self, key: crossterm::event::KeyEvent) -> Result<()> {
+        if self.proxy_editing {
+            match key.code {
+                KeyCode::Esc => {
+                    self.proxy_editing = false;
+                    self.proxy_temp_buffer.clear();
+                }
+                KeyCode::Enter => {
+                    let kind = self.current_proxy_kind();
+                    if let Some(field) = self.proxy_field_kind(kind, self.proxy_edit_field_index) {
+                        let value = self.proxy_temp_buffer.clone();
+                        self.set_proxy_field_value(kind, field, value).await?;
+                    }
+                    self.proxy_editing = false;
+                    self.proxy_temp_buffer.clear();
+                }
+                KeyCode::Backspace => {
+                    self.proxy_temp_buffer.pop();
+                }
+                KeyCode::Char(c) => {
+                    self.proxy_temp_buffer.push(c);
+                }
+                _ => {}
+            }
+            return Ok(());
+        }
+
+        let kind = self.current_proxy_kind();
+        let max_fields = self.proxy_field_count(kind);
+        if self.proxy_edit_field_index >= max_fields {
+            self.proxy_edit_field_index = max_fields.saturating_sub(1);
+        }
+
+        match key.code {
+            KeyCode::Esc => {
+                self.proxy_edit_visible = false;
+                self.proxy_editing = false;
+                self.proxy_temp_buffer.clear();
+            }
+            KeyCode::Up | KeyCode::Char('k') => {
+                if self.proxy_edit_field_index > 0 {
+                    self.proxy_edit_field_index -= 1;
+                }
+            }
+            KeyCode::Down | KeyCode::Char('j') => {
+                if self.proxy_edit_field_index + 1 < max_fields {
+                    self.proxy_edit_field_index += 1;
+                }
+            }
+            KeyCode::Enter | KeyCode::Char(' ') => {
+                if self.proxy_edit_field_index == 0 {
+                    self.cycle_proxy_kind().await?;
+                    let new_max = self.proxy_field_count(self.current_proxy_kind());
+                    if self.proxy_edit_field_index >= new_max {
+                        self.proxy_edit_field_index = new_max.saturating_sub(1);
+                    }
+                } else if let Some(field) =
+                    self.proxy_field_kind(kind, self.proxy_edit_field_index)
+                {
+                    self.proxy_temp_buffer = self.proxy_field_value(kind, field);
+                    self.proxy_editing = true;
+                }
+            }
+            _ => {}
+        }
+
+        Ok(())
+    }
+
+    async fn handle_tunnel_picker_key(&mut self, key: crossterm::event::KeyEvent) -> Result<()> {
+        let tunnel_count = self.config.tunnels.len();
+
+        match key.code {
+            KeyCode::Esc => {
+                self.tunnel_picker_visible = false;
+                self.tunnel_picker_index = 0;
+                self.tunnel_picker_selected.clear();
+            }
+            KeyCode::Up | KeyCode::Char('k') => {
+                if self.tunnel_picker_index > 0 {
+                    self.tunnel_picker_index -= 1;
+                }
+            }
+            KeyCode::Down | KeyCode::Char('j') => {
+                if self.tunnel_picker_index + 1 < tunnel_count {
+                    self.tunnel_picker_index += 1;
+                }
+            }
+            KeyCode::Char(' ') => {
+                if let Some(tunnel) = self.config.tunnels.get(self.tunnel_picker_index) {
+                    let name = tunnel.name().to_string();
+                    if let Some(pos) = self
+                        .tunnel_picker_selected
+                        .iter()
+                        .position(|t| t == &name)
+                    {
+                        self.tunnel_picker_selected.remove(pos);
+                    } else {
+                        self.tunnel_picker_selected.push(name);
+                    }
+                }
+            }
+            KeyCode::Enter => {
+                let mut selected = Vec::new();
+                for tunnel in &self.config.tunnels {
+                    if self
+                        .tunnel_picker_selected
+                        .iter()
+                        .any(|t| t == tunnel.name())
+                    {
+                        selected.push(crate::config::TunnelRef::Name(
+                            tunnel.name().to_string(),
+                        ));
+                    }
+                }
+
+                self.modify_edit_host(|host| {
+                    host.tunnels = selected;
+                });
+
+                if !self.host_edit_is_new {
+                    self.config.save().await?;
+                }
+
+                self.tunnel_picker_visible = false;
+                self.tunnel_picker_index = 0;
+                self.tunnel_picker_selected.clear();
+            }
+            _ => {}
+        }
+
+        Ok(())
+    }
+
+    fn current_proxy_kind(&self) -> ProxyKind {
+        match self.current_edit_host().and_then(|h| h.proxy.as_ref()) {
+            Some(crate::config::ProxyConfig::JumpHost { .. }) => ProxyKind::JumpHost,
+            Some(crate::config::ProxyConfig::Socks5 { .. }) => ProxyKind::Socks5,
+            Some(crate::config::ProxyConfig::Socks4 { .. }) => ProxyKind::Socks4,
+            Some(crate::config::ProxyConfig::Http { .. }) => ProxyKind::Http,
+            Some(crate::config::ProxyConfig::ProxyCommand { .. }) => ProxyKind::ProxyCommand,
+            None => ProxyKind::None,
+        }
+    }
+
+    fn proxy_field_count(&self, kind: ProxyKind) -> usize {
+        match kind {
+            ProxyKind::None => 1,
+            ProxyKind::JumpHost => 2,
+            ProxyKind::Socks5 => 5,
+            ProxyKind::Socks4 => 4,
+            ProxyKind::Http => 5,
+            ProxyKind::ProxyCommand => 2,
+        }
+    }
+
+    fn proxy_field_kind(&self, kind: ProxyKind, index: usize) -> Option<ProxyFieldKind> {
+        let fields = match kind {
+            ProxyKind::None => vec![ProxyFieldKind::Type],
+            ProxyKind::JumpHost => vec![ProxyFieldKind::Type, ProxyFieldKind::Host],
+            ProxyKind::Socks5 => vec![
+                ProxyFieldKind::Type,
+                ProxyFieldKind::Address,
+                ProxyFieldKind::Port,
+                ProxyFieldKind::Username,
+                ProxyFieldKind::Password,
+            ],
+            ProxyKind::Socks4 => vec![
+                ProxyFieldKind::Type,
+                ProxyFieldKind::Address,
+                ProxyFieldKind::Port,
+                ProxyFieldKind::UserId,
+            ],
+            ProxyKind::Http => vec![
+                ProxyFieldKind::Type,
+                ProxyFieldKind::Address,
+                ProxyFieldKind::Port,
+                ProxyFieldKind::Username,
+                ProxyFieldKind::Password,
+            ],
+            ProxyKind::ProxyCommand => vec![ProxyFieldKind::Type, ProxyFieldKind::Command],
+        };
+
+        fields.get(index).copied()
+    }
+
+    fn proxy_field_value(&self, kind: ProxyKind, field: ProxyFieldKind) -> String {
+        match field {
+            ProxyFieldKind::Type => match kind {
+                ProxyKind::None => "None".to_string(),
+                ProxyKind::JumpHost => "JumpHost".to_string(),
+                ProxyKind::Socks5 => "SOCKS5".to_string(),
+                ProxyKind::Socks4 => "SOCKS4".to_string(),
+                ProxyKind::Http => "HTTP".to_string(),
+                ProxyKind::ProxyCommand => "ProxyCommand".to_string(),
+            },
+            ProxyFieldKind::Host => self
+                .current_edit_host()
+                .and_then(|h| h.proxy.as_ref())
+                .and_then(|p| match p {
+                    crate::config::ProxyConfig::JumpHost { host } => Some(match host {
+                        crate::config::JumpHostRef::ByUuid(id) => id.to_string(),
+                        crate::config::JumpHostRef::ByHostname(name) => name.clone(),
+                        crate::config::JumpHostRef::ByName(name) => name.clone(),
+                    }),
+                    _ => None,
+                })
+                .unwrap_or_default(),
+            ProxyFieldKind::Address => self
+                .current_edit_host()
+                .and_then(|h| h.proxy.as_ref())
+                .and_then(|p| match p {
+                    crate::config::ProxyConfig::Socks5 { address, .. } => Some(address.clone()),
+                    crate::config::ProxyConfig::Socks4 { address, .. } => Some(address.clone()),
+                    crate::config::ProxyConfig::Http { address, .. } => Some(address.clone()),
+                    _ => None,
+                })
+                .unwrap_or_default(),
+            ProxyFieldKind::Port => self
+                .current_edit_host()
+                .and_then(|h| h.proxy.as_ref())
+                .and_then(|p| match p {
+                    crate::config::ProxyConfig::Socks5 { port, .. } => Some(*port),
+                    crate::config::ProxyConfig::Socks4 { port, .. } => Some(*port),
+                    crate::config::ProxyConfig::Http { port, .. } => Some(*port),
+                    _ => None,
+                })
+                .map(|p| p.to_string())
+                .unwrap_or_default(),
+            ProxyFieldKind::Username => self
+                .current_edit_host()
+                .and_then(|h| h.proxy.as_ref())
+                .and_then(|p| match p {
+                    crate::config::ProxyConfig::Socks5 { username, .. } => {
+                        username.clone()
+                    }
+                    crate::config::ProxyConfig::Http { username, .. } => username.clone(),
+                    _ => None,
+                })
+                .unwrap_or_default(),
+            ProxyFieldKind::Password => self
+                .current_edit_host()
+                .and_then(|h| h.proxy.as_ref())
+                .and_then(|p| match p {
+                    crate::config::ProxyConfig::Socks5 { password, .. } => {
+                        password.clone()
+                    }
+                    crate::config::ProxyConfig::Http { password, .. } => password.clone(),
+                    _ => None,
+                })
+                .unwrap_or_default(),
+            ProxyFieldKind::UserId => self
+                .current_edit_host()
+                .and_then(|h| h.proxy.as_ref())
+                .and_then(|p| match p {
+                    crate::config::ProxyConfig::Socks4 { user_id, .. } => user_id.clone(),
+                    _ => None,
+                })
+                .unwrap_or_default(),
+            ProxyFieldKind::Command => self
+                .current_edit_host()
+                .and_then(|h| h.proxy.as_ref())
+                .and_then(|p| match p {
+                    crate::config::ProxyConfig::ProxyCommand { command } => {
+                        Some(command.clone())
+                    }
+                    _ => None,
+                })
+                .unwrap_or_default(),
+        }
+    }
+
+    async fn cycle_proxy_kind(&mut self) -> Result<()> {
+        let next = match self.current_proxy_kind() {
+            ProxyKind::None => ProxyKind::JumpHost,
+            ProxyKind::JumpHost => ProxyKind::Socks5,
+            ProxyKind::Socks5 => ProxyKind::Socks4,
+            ProxyKind::Socks4 => ProxyKind::Http,
+            ProxyKind::Http => ProxyKind::ProxyCommand,
+            ProxyKind::ProxyCommand => ProxyKind::None,
+        };
+
+        self.modify_edit_host(|host| {
+            host.proxy = match next {
+                ProxyKind::None => None,
+                ProxyKind::JumpHost => Some(crate::config::ProxyConfig::JumpHost {
+                    host: crate::config::JumpHostRef::ByName(String::new()),
+                }),
+                ProxyKind::Socks5 => Some(crate::config::ProxyConfig::Socks5 {
+                    address: "127.0.0.1".to_string(),
+                    port: 1080,
+                    username: None,
+                    password: None,
+                }),
+                ProxyKind::Socks4 => Some(crate::config::ProxyConfig::Socks4 {
+                    address: "127.0.0.1".to_string(),
+                    port: 1080,
+                    user_id: None,
+                }),
+                ProxyKind::Http => Some(crate::config::ProxyConfig::Http {
+                    address: "127.0.0.1".to_string(),
+                    port: 8080,
+                    username: None,
+                    password: None,
+                }),
+                ProxyKind::ProxyCommand => Some(crate::config::ProxyConfig::ProxyCommand {
+                    command: "nc %h %p".to_string(),
+                }),
+            };
+        });
+
+        if !self.host_edit_is_new {
+            self.config.save().await?;
+        }
+
+        Ok(())
+    }
+
+    async fn set_proxy_field_value(
+        &mut self,
+        kind: ProxyKind,
+        field: ProxyFieldKind,
+        value: String,
+    ) -> Result<()> {
+        self.modify_edit_host(|host| {
+            let value = value.trim().to_string();
+            match kind {
+                ProxyKind::JumpHost => {
+                    if let ProxyFieldKind::Host = field {
+                        let host_ref = if let Ok(uuid) = uuid::Uuid::parse_str(&value) {
+                            crate::config::JumpHostRef::ByUuid(uuid)
+                        } else {
+                            crate::config::JumpHostRef::ByName(value)
+                        };
+                        host.proxy = Some(crate::config::ProxyConfig::JumpHost { host: host_ref });
+                    }
+                }
+                ProxyKind::Socks5 => {
+                    if let Some(crate::config::ProxyConfig::Socks5 {
+                        address,
+                        port,
+                        username,
+                        password,
+                    }) = host.proxy.as_mut()
+                    {
+                        match field {
+                            ProxyFieldKind::Address => *address = value,
+                            ProxyFieldKind::Port => {
+                                if let Ok(p) = value.parse::<u16>() {
+                                    *port = p;
+                                }
+                            }
+                            ProxyFieldKind::Username => {
+                                *username = if value.is_empty() { None } else { Some(value) }
+                            }
+                            ProxyFieldKind::Password => {
+                                *password = if value.is_empty() { None } else { Some(value) }
+                            }
+                            _ => {}
+                        }
+                    }
+                }
+                ProxyKind::Socks4 => {
+                    if let Some(crate::config::ProxyConfig::Socks4 {
+                        address,
+                        port,
+                        user_id,
+                    }) = host.proxy.as_mut()
+                    {
+                        match field {
+                            ProxyFieldKind::Address => *address = value,
+                            ProxyFieldKind::Port => {
+                                if let Ok(p) = value.parse::<u16>() {
+                                    *port = p;
+                                }
+                            }
+                            ProxyFieldKind::UserId => {
+                                *user_id = if value.is_empty() { None } else { Some(value) }
+                            }
+                            _ => {}
+                        }
+                    }
+                }
+                ProxyKind::Http => {
+                    if let Some(crate::config::ProxyConfig::Http {
+                        address,
+                        port,
+                        username,
+                        password,
+                    }) = host.proxy.as_mut()
+                    {
+                        match field {
+                            ProxyFieldKind::Address => *address = value,
+                            ProxyFieldKind::Port => {
+                                if let Ok(p) = value.parse::<u16>() {
+                                    *port = p;
+                                }
+                            }
+                            ProxyFieldKind::Username => {
+                                *username = if value.is_empty() { None } else { Some(value) }
+                            }
+                            ProxyFieldKind::Password => {
+                                *password = if value.is_empty() { None } else { Some(value) }
+                            }
+                            _ => {}
+                        }
+                    }
+                }
+                ProxyKind::ProxyCommand => {
+                    if let ProxyFieldKind::Command = field {
+                        host.proxy = Some(crate::config::ProxyConfig::ProxyCommand { command: value });
+                    }
+                }
+                ProxyKind::None => {}
+            }
+        });
+
+        if !self.host_edit_is_new {
+            self.config.save().await?;
+        }
+
         Ok(())
     }
 
@@ -1595,11 +2199,13 @@ impl App {
                 if self.selected_host_index >= host_count && host_count > 0 {
                     self.selected_host_index = host_count - 1;
                 }
+                self.clamp_tunnel_selected_index();
             }
             Ok(_) => {
                 // :q exits with success code 0, so this handles other exits
                 self.config = Config::load().await?;
                 self.status_message = Some("Config reloaded".to_string());
+                self.clamp_tunnel_selected_index();
             }
             Err(e) => {
                 self.status_message = Some(format!("Failed to open editor: {}", e));
@@ -1659,6 +2265,15 @@ impl App {
         }
     }
 
+    fn clamp_tunnel_selected_index(&mut self) {
+        let total = self.config.tunnels.len();
+        if total == 0 {
+            self.tunnel_selected_index = 0;
+        } else if self.tunnel_selected_index >= total {
+            self.tunnel_selected_index = total - 1;
+        }
+    }
+
     fn open_new_host_edit(&mut self) {
         let default_host = self.build_default_new_host();
         self.host_edit_visible = true;
@@ -1709,6 +2324,8 @@ impl App {
             && draft.username == default_host.username
             && self.auth_method_eq(&draft.auth, &default_host.auth)
             && draft.remember_password == default_host.remember_password
+            && draft.proxy == default_host.proxy
+            && draft.tunnels == default_host.tunnels
     }
 
     fn auth_method_eq(
@@ -2097,6 +2714,8 @@ impl App {
             }
         }
 
+        let autostart_host = connection.host.clone();
+
         // Open shell channel
         match connection.open_shell(cols, rows) {
             Ok(channel) => {
@@ -2129,6 +2748,9 @@ impl App {
 
                 // Store connection
                 self.connections.add(connection);
+
+                // Start auto-start tunnels after connection is established
+                self.start_autostart_tunnels(autostart_host, &passwords_used);
 
                 // Spawn task to handle channel I/O
                 let event_sender = self.events.sender();
@@ -2168,6 +2790,175 @@ impl App {
             }
         }
         self.status_message = Some(format!("Connection failed: {}", error_msg));
+    }
+
+    fn start_autostart_tunnels(
+        &mut self,
+        host: HostConfig,
+        passwords_used: &std::collections::HashMap<Uuid, String>,
+    ) {
+        if self.autostart_tunnels.contains_key(&host.id) {
+            return;
+        }
+
+        let tunnels: Vec<crate::config::TunnelConfig> = self
+            .config
+            .resolve_host_tunnels(&host)
+            .into_iter()
+            .filter(|t| t.auto_start())
+            .cloned()
+            .collect();
+
+        if tunnels.is_empty() {
+            return;
+        }
+
+        let proxy_chain = self.config.resolve_proxy_chain(&host);
+        let passwords = passwords_used.clone();
+        let mut handles: Vec<ActiveTunnel> = Vec::new();
+
+        for tunnel in tunnels {
+            let proxy_chain = proxy_chain.clone();
+            let passwords = passwords.clone();
+            let (shutdown_tx, shutdown_rx) = std::sync::mpsc::channel::<()>();
+            let tunnel_name = tunnel.name().to_string();
+            let tunnel_name_for_handle = tunnel_name.clone();
+            let host_name = host.name.clone();
+            let event_sender = self.events.sender();
+
+            tokio::task::spawn_blocking(move || {
+                let mut report = |msg: &str| {
+                    let _ = event_sender.send(AppEvent::TunnelStatus {
+                        message: msg.to_string(),
+                    });
+                };
+
+                report(&format!(
+                    "Starting tunnel: {} ({})",
+                    tunnel_name, host_name
+                ));
+
+                match App::connect_via_proxy_chain(&proxy_chain, &passwords) {
+                    Ok(conn) => {
+                        if let Err(e) = crate::ssh::run_tunnel(conn, tunnel, shutdown_rx, &mut report) {
+                            report(&format!(
+                                "Tunnel failed: {} ({}) - {}",
+                                tunnel_name, host_name, e
+                            ));
+                        } else {
+                            report(&format!(
+                                "Tunnel stopped: {} ({})",
+                                tunnel_name, host_name
+                            ));
+                        }
+                    }
+                    Err(e) => {
+                        report(&format!(
+                            "Tunnel failed: {} ({}) - {}",
+                            tunnel_name, host_name, e
+                        ));
+                    }
+                }
+            });
+
+            handles.push(ActiveTunnel {
+                name: tunnel_name_for_handle,
+                shutdown: shutdown_tx,
+            });
+        }
+
+        if !handles.is_empty() {
+            self.autostart_tunnels.insert(host.id, handles);
+        }
+    }
+
+    fn stop_autostart_tunnels(&mut self, host_id: Uuid) {
+        if let Some(handles) = self.autostart_tunnels.remove(&host_id) {
+            let count = handles.len();
+            for handle in handles {
+                let _ = handle.shutdown.send(());
+            }
+            if count > 0 {
+                self.status_message = Some(format!("Stopped {} tunnel(s)", count));
+            }
+        }
+    }
+
+    fn connect_via_proxy_chain(
+        proxy_chain: &[HostConfig],
+        passwords: &std::collections::HashMap<Uuid, String>,
+    ) -> Result<SshConnection> {
+        use crate::config::ProxyConfig;
+
+        let mut prev_connection: Option<SshConnection> = None;
+
+        for (i, chain_host) in proxy_chain.iter().enumerate() {
+            let is_last = i == proxy_chain.len() - 1;
+            let password = passwords.get(&chain_host.id).map(|s| s.as_str());
+
+            let proxy = if let Some(conn) = prev_connection.take() {
+                ProxyConnection::JumpHost {
+                    connection: Box::new(conn),
+                }
+            } else if is_last {
+                match &chain_host.proxy {
+                    Some(ProxyConfig::Socks5 {
+                        address,
+                        port,
+                        username,
+                        password: proxy_pwd,
+                    }) => ProxyConnection::Socks5 {
+                        address: address.clone(),
+                        port: *port,
+                        auth: match (username, proxy_pwd) {
+                            (Some(u), Some(p)) => Some((u.clone(), p.clone())),
+                            _ => None,
+                        },
+                    },
+                    Some(ProxyConfig::Socks4 {
+                        address,
+                        port,
+                        user_id,
+                    }) => ProxyConnection::Socks4 {
+                        address: address.clone(),
+                        port: *port,
+                        user_id: user_id.clone(),
+                    },
+                    Some(ProxyConfig::Http {
+                        address,
+                        port,
+                        username,
+                        password: proxy_pwd,
+                    }) => ProxyConnection::HttpConnect {
+                        address: address.clone(),
+                        port: *port,
+                        auth: match (username, proxy_pwd) {
+                            (Some(u), Some(p)) => Some((u.clone(), p.clone())),
+                            _ => None,
+                        },
+                    },
+                    Some(ProxyConfig::ProxyCommand { command }) => ProxyConnection::ProxyCommand {
+                        command: command.clone(),
+                        target_host: chain_host.hostname.clone(),
+                        target_port: chain_host.port,
+                    },
+                    Some(ProxyConfig::JumpHost { .. }) | None => ProxyConnection::Direct,
+                }
+            } else {
+                ProxyConnection::Direct
+            };
+
+            let connection =
+                SshConnection::connect_via_proxy(chain_host.clone(), proxy, password, None)?;
+
+            if is_last {
+                return Ok(connection);
+            }
+
+            prev_connection = Some(connection);
+        }
+
+        Err(anyhow::anyhow!("Empty proxy chain"))
     }
 
     /// Open SFTP session for a host, creating a new SSH connection for SFTP
@@ -3093,12 +3884,529 @@ impl App {
     }
 
     async fn handle_tunnels_key(&mut self, key: crossterm::event::KeyEvent) -> Result<()> {
+        if self.tunnel_edit_visible {
+            return self.handle_tunnel_edit_key(key).await;
+        }
+
+        let tunnel_count = self.config.tunnels.len();
+
         match key.code {
             KeyCode::Esc => self.view = View::Connections,
             KeyCode::Char('?') => self.view = View::Help,
+            KeyCode::Up | KeyCode::Char('k') => {
+                if self.tunnel_selected_index > 0 {
+                    self.tunnel_selected_index -= 1;
+                }
+            }
+            KeyCode::Down | KeyCode::Char('j') => {
+                if self.tunnel_selected_index + 1 < tunnel_count {
+                    self.tunnel_selected_index += 1;
+                }
+            }
+            KeyCode::Home | KeyCode::Char('g') => {
+                self.tunnel_selected_index = 0;
+            }
+            KeyCode::End | KeyCode::Char('G') => {
+                if tunnel_count > 0 {
+                    self.tunnel_selected_index = tunnel_count - 1;
+                }
+            }
+            KeyCode::Enter => {
+                if tunnel_count > 0 {
+                    self.open_edit_tunnel();
+                } else {
+                    self.open_new_tunnel_edit();
+                }
+            }
+            KeyCode::Char('n') => {
+                self.open_new_tunnel_edit();
+            }
+            KeyCode::Char('d') => {
+                self.delete_selected_tunnel().await?;
+            }
             _ => {}
         }
         Ok(())
+    }
+
+    async fn handle_tunnel_edit_key(&mut self, key: crossterm::event::KeyEvent) -> Result<()> {
+        if self.tunnel_editing {
+            match key.code {
+                KeyCode::Esc => {
+                    self.tunnel_editing = false;
+                    self.tunnel_temp_buffer.clear();
+                }
+                KeyCode::Enter => {
+                    if let Some(tunnel) = self.tunnel_edit_draft.as_ref() {
+                        if let Some(field) =
+                            self.tunnel_field_kind(tunnel, self.tunnel_edit_field_index)
+                        {
+                            let value = self.tunnel_temp_buffer.clone();
+                            self.set_tunnel_field_value(field, value);
+                        }
+                    }
+                    self.tunnel_editing = false;
+                    self.tunnel_temp_buffer.clear();
+                }
+                KeyCode::Backspace => {
+                    self.tunnel_temp_buffer.pop();
+                }
+                KeyCode::Char(c) => {
+                    self.tunnel_temp_buffer.push(c);
+                }
+                _ => {}
+            }
+            return Ok(());
+        }
+
+        let field_count = self
+            .tunnel_edit_draft
+            .as_ref()
+            .map(|t| self.tunnel_field_count(t))
+            .unwrap_or(0);
+
+        if self.tunnel_edit_field_index >= field_count {
+            self.tunnel_edit_field_index = field_count.saturating_sub(1);
+        }
+
+        match key.code {
+            KeyCode::Esc => {
+                self.close_tunnel_edit().await?;
+            }
+            KeyCode::Up | KeyCode::Char('k') => {
+                if self.tunnel_edit_field_index > 0 {
+                    self.tunnel_edit_field_index -= 1;
+                }
+            }
+            KeyCode::Down | KeyCode::Char('j') => {
+                if self.tunnel_edit_field_index + 1 < field_count {
+                    self.tunnel_edit_field_index += 1;
+                }
+            }
+            KeyCode::Enter | KeyCode::Char(' ') => {
+                if let Some(tunnel) = self.tunnel_edit_draft.as_ref() {
+                    if let Some(field) =
+                        self.tunnel_field_kind(tunnel, self.tunnel_edit_field_index)
+                    {
+                        match field {
+                            TunnelFieldKind::Type => {
+                                self.cycle_tunnel_type();
+                                let new_count = self
+                                    .tunnel_edit_draft
+                                    .as_ref()
+                                    .map(|t| self.tunnel_field_count(t))
+                                    .unwrap_or(0);
+                                if self.tunnel_edit_field_index >= new_count {
+                                    self.tunnel_edit_field_index = new_count.saturating_sub(1);
+                                }
+                            }
+                            TunnelFieldKind::AutoStart => {
+                                self.toggle_tunnel_auto_start();
+                            }
+                            _ => {
+                                self.tunnel_temp_buffer = self
+                                    .tunnel_field_value(tunnel, field)
+                                    .unwrap_or_default();
+                                self.tunnel_editing = true;
+                            }
+                        }
+                    }
+                }
+            }
+            _ => {}
+        }
+
+        Ok(())
+    }
+
+    fn open_new_tunnel_edit(&mut self) {
+        let default_tunnel = self.build_default_tunnel();
+        self.tunnel_edit_visible = true;
+        self.tunnel_edit_is_new = true;
+        self.tunnel_edit_draft = Some(default_tunnel.clone());
+        self.tunnel_edit_default = Some(default_tunnel);
+        self.tunnel_edit_field_index = 0;
+        self.tunnel_editing = false;
+        self.tunnel_temp_buffer.clear();
+    }
+
+    fn open_edit_tunnel(&mut self) {
+        if let Some(tunnel) = self.config.tunnels.get(self.tunnel_selected_index).cloned() {
+            self.tunnel_edit_visible = true;
+            self.tunnel_edit_is_new = false;
+            self.tunnel_edit_draft = Some(tunnel);
+            self.tunnel_edit_default = None;
+            self.tunnel_edit_field_index = 0;
+            self.tunnel_editing = false;
+            self.tunnel_temp_buffer.clear();
+        } else {
+            self.status_message = Some("No tunnel selected".to_string());
+        }
+    }
+
+    async fn close_tunnel_edit(&mut self) -> Result<()> {
+        let draft = match self.tunnel_edit_draft.clone() {
+            Some(d) => d,
+            None => {
+                self.tunnel_edit_visible = false;
+                return Ok(());
+            }
+        };
+
+        let name = draft.name().to_string();
+        if name.trim().is_empty() {
+            self.status_message = Some("Tunnel name is required".to_string());
+            return Ok(());
+        }
+
+        if self.tunnel_edit_is_new {
+            if let Some(default) = self.tunnel_edit_default.as_ref() {
+                if &draft == default {
+                    self.reset_tunnel_edit_state();
+                    return Ok(());
+                }
+            }
+
+            if self.tunnel_name_exists(&name, None) {
+                self.status_message = Some("Tunnel name already exists".to_string());
+                return Ok(());
+            }
+
+            self.config.tunnels.push(draft);
+            self.config.save().await?;
+            self.tunnel_selected_index = self.config.tunnels.len().saturating_sub(1);
+            self.status_message = Some(format!("Added tunnel: {}", name));
+        } else {
+            let idx = self.tunnel_selected_index;
+            if idx >= self.config.tunnels.len() {
+                self.reset_tunnel_edit_state();
+                return Ok(());
+            }
+
+            if self.tunnel_name_exists(&name, Some(idx)) {
+                self.status_message = Some("Tunnel name already exists".to_string());
+                return Ok(());
+            }
+
+            let old_name = self.config.tunnels[idx].name().to_string();
+            self.config.tunnels[idx] = draft;
+            if old_name != name {
+                self.rename_tunnel_references(&old_name, &name);
+            }
+            self.config.save().await?;
+            self.status_message = Some(format!("Updated tunnel: {}", name));
+        }
+
+        self.reset_tunnel_edit_state();
+        Ok(())
+    }
+
+    async fn delete_selected_tunnel(&mut self) -> Result<()> {
+        if self.config.tunnels.is_empty() {
+            self.status_message = Some("No tunnel to delete".to_string());
+            return Ok(());
+        }
+
+        let idx = self.tunnel_selected_index.min(self.config.tunnels.len() - 1);
+        let name = self.config.tunnels[idx].name().to_string();
+        self.config.tunnels.remove(idx);
+        self.remove_tunnel_references(&name);
+        self.config.save().await?;
+
+        if self.config.tunnels.is_empty() {
+            self.tunnel_selected_index = 0;
+        } else if self.tunnel_selected_index >= self.config.tunnels.len()
+            && self.tunnel_selected_index > 0
+        {
+            self.tunnel_selected_index = self.config.tunnels.len() - 1;
+        }
+
+        self.status_message = Some(format!("Deleted tunnel: {}", name));
+        Ok(())
+    }
+
+    fn reset_tunnel_edit_state(&mut self) {
+        self.tunnel_edit_visible = false;
+        self.tunnel_edit_is_new = false;
+        self.tunnel_edit_draft = None;
+        self.tunnel_edit_default = None;
+        self.tunnel_edit_field_index = 0;
+        self.tunnel_editing = false;
+        self.tunnel_temp_buffer.clear();
+    }
+
+    fn build_default_tunnel(&self) -> crate::config::TunnelConfig {
+        let idx = self.config.tunnels.len() + 1;
+        crate::config::TunnelConfig::Local {
+            name: format!("tunnel-{}", idx),
+            bind_addr: "127.0.0.1".to_string(),
+            bind_port: 8080,
+            remote_host: "localhost".to_string(),
+            remote_port: 80,
+            auto_start: false,
+        }
+    }
+
+    fn tunnel_name_exists(&self, name: &str, exclude_idx: Option<usize>) -> bool {
+        self.config
+            .tunnels
+            .iter()
+            .enumerate()
+            .any(|(idx, t)| t.name() == name && Some(idx) != exclude_idx)
+    }
+
+    fn remove_tunnel_references(&mut self, name: &str) {
+        for group in &mut self.config.groups {
+            for host in &mut group.hosts {
+                host.tunnels.retain(|t| t.name() != name);
+            }
+        }
+        for host in &mut self.config.hosts {
+            host.tunnels.retain(|t| t.name() != name);
+        }
+    }
+
+    fn rename_tunnel_references(&mut self, old_name: &str, new_name: &str) {
+        for group in &mut self.config.groups {
+            for host in &mut group.hosts {
+                for tunnel in &mut host.tunnels {
+                    if tunnel.name() == old_name {
+                        *tunnel = crate::config::TunnelRef::Name(new_name.to_string());
+                    }
+                }
+            }
+        }
+        for host in &mut self.config.hosts {
+            for tunnel in &mut host.tunnels {
+                if tunnel.name() == old_name {
+                    *tunnel = crate::config::TunnelRef::Name(new_name.to_string());
+                }
+            }
+        }
+    }
+
+    fn tunnel_field_count(&self, tunnel: &crate::config::TunnelConfig) -> usize {
+        match tunnel {
+            crate::config::TunnelConfig::Local { .. } => 7,
+            crate::config::TunnelConfig::Remote { .. } => 7,
+            crate::config::TunnelConfig::Dynamic { .. } => 5,
+        }
+    }
+
+    fn tunnel_field_kind(
+        &self,
+        tunnel: &crate::config::TunnelConfig,
+        index: usize,
+    ) -> Option<TunnelFieldKind> {
+        let fields = match tunnel {
+            crate::config::TunnelConfig::Local { .. } => vec![
+                TunnelFieldKind::Name,
+                TunnelFieldKind::Type,
+                TunnelFieldKind::AutoStart,
+                TunnelFieldKind::BindAddr,
+                TunnelFieldKind::BindPort,
+                TunnelFieldKind::RemoteHost,
+                TunnelFieldKind::RemotePort,
+            ],
+            crate::config::TunnelConfig::Remote { .. } => vec![
+                TunnelFieldKind::Name,
+                TunnelFieldKind::Type,
+                TunnelFieldKind::AutoStart,
+                TunnelFieldKind::RemoteAddr,
+                TunnelFieldKind::RemotePort,
+                TunnelFieldKind::LocalHost,
+                TunnelFieldKind::LocalPort,
+            ],
+            crate::config::TunnelConfig::Dynamic { .. } => vec![
+                TunnelFieldKind::Name,
+                TunnelFieldKind::Type,
+                TunnelFieldKind::AutoStart,
+                TunnelFieldKind::BindAddr,
+                TunnelFieldKind::BindPort,
+            ],
+        };
+
+        fields.get(index).copied()
+    }
+
+    fn tunnel_field_value(
+        &self,
+        tunnel: &crate::config::TunnelConfig,
+        field: TunnelFieldKind,
+    ) -> Option<String> {
+        match field {
+            TunnelFieldKind::Name => Some(tunnel.name().to_string()),
+            TunnelFieldKind::Type => Some(tunnel.type_label().to_string()),
+            TunnelFieldKind::AutoStart => Some(if tunnel.auto_start() {
+                "Yes".to_string()
+            } else {
+                "No".to_string()
+            }),
+            TunnelFieldKind::BindAddr => match tunnel {
+                crate::config::TunnelConfig::Local { bind_addr, .. } => Some(bind_addr.clone()),
+                crate::config::TunnelConfig::Dynamic { bind_addr, .. } => Some(bind_addr.clone()),
+                _ => None,
+            },
+            TunnelFieldKind::BindPort => match tunnel {
+                crate::config::TunnelConfig::Local { bind_port, .. } => {
+                    Some(bind_port.to_string())
+                }
+                crate::config::TunnelConfig::Dynamic { bind_port, .. } => {
+                    Some(bind_port.to_string())
+                }
+                _ => None,
+            },
+            TunnelFieldKind::RemoteHost => match tunnel {
+                crate::config::TunnelConfig::Local { remote_host, .. } => {
+                    Some(remote_host.clone())
+                }
+                _ => None,
+            },
+            TunnelFieldKind::RemotePort => match tunnel {
+                crate::config::TunnelConfig::Local { remote_port, .. } => {
+                    Some(remote_port.to_string())
+                }
+                crate::config::TunnelConfig::Remote { remote_port, .. } => {
+                    Some(remote_port.to_string())
+                }
+                _ => None,
+            },
+            TunnelFieldKind::RemoteAddr => match tunnel {
+                crate::config::TunnelConfig::Remote { remote_addr, .. } => {
+                    Some(remote_addr.clone())
+                }
+                _ => None,
+            },
+            TunnelFieldKind::LocalHost => match tunnel {
+                crate::config::TunnelConfig::Remote { local_host, .. } => {
+                    Some(local_host.clone())
+                }
+                _ => None,
+            },
+            TunnelFieldKind::LocalPort => match tunnel {
+                crate::config::TunnelConfig::Remote { local_port, .. } => {
+                    Some(local_port.to_string())
+                }
+                _ => None,
+            },
+        }
+    }
+
+    fn set_tunnel_field_value(&mut self, field: TunnelFieldKind, value: String) {
+        let value = value.trim().to_string();
+        if let Some(tunnel) = self.tunnel_edit_draft.as_mut() {
+            match field {
+                TunnelFieldKind::Name => match tunnel {
+                    crate::config::TunnelConfig::Local { name, .. } => *name = value,
+                    crate::config::TunnelConfig::Remote { name, .. } => *name = value,
+                    crate::config::TunnelConfig::Dynamic { name, .. } => *name = value,
+                },
+                TunnelFieldKind::BindAddr => match tunnel {
+                    crate::config::TunnelConfig::Local { bind_addr, .. } => *bind_addr = value,
+                    crate::config::TunnelConfig::Dynamic { bind_addr, .. } => *bind_addr = value,
+                    _ => {}
+                },
+                TunnelFieldKind::BindPort => {
+                    if let Ok(port) = value.parse::<u16>() {
+                        match tunnel {
+                            crate::config::TunnelConfig::Local { bind_port, .. } => {
+                                *bind_port = port
+                            }
+                            crate::config::TunnelConfig::Dynamic { bind_port, .. } => {
+                                *bind_port = port
+                            }
+                            _ => {}
+                        }
+                    }
+                }
+                TunnelFieldKind::RemoteHost => match tunnel {
+                    crate::config::TunnelConfig::Local { remote_host, .. } => {
+                        *remote_host = value
+                    }
+                    _ => {}
+                },
+                TunnelFieldKind::RemotePort => {
+                    if let Ok(port) = value.parse::<u16>() {
+                        match tunnel {
+                            crate::config::TunnelConfig::Local { remote_port, .. } => {
+                                *remote_port = port
+                            }
+                            crate::config::TunnelConfig::Remote { remote_port, .. } => {
+                                *remote_port = port
+                            }
+                            _ => {}
+                        }
+                    }
+                }
+                TunnelFieldKind::RemoteAddr => match tunnel {
+                    crate::config::TunnelConfig::Remote { remote_addr, .. } => {
+                        *remote_addr = value
+                    }
+                    _ => {}
+                },
+                TunnelFieldKind::LocalHost => match tunnel {
+                    crate::config::TunnelConfig::Remote { local_host, .. } => {
+                        *local_host = value
+                    }
+                    _ => {}
+                },
+                TunnelFieldKind::LocalPort => {
+                    if let Ok(port) = value.parse::<u16>() {
+                        if let crate::config::TunnelConfig::Remote { local_port, .. } = tunnel {
+                            *local_port = port;
+                        }
+                    }
+                }
+                _ => {}
+            }
+        }
+    }
+
+    fn cycle_tunnel_type(&mut self) {
+        if let Some(tunnel) = self.tunnel_edit_draft.as_mut() {
+            let name = tunnel.name().to_string();
+            let auto_start = tunnel.auto_start();
+            *tunnel = match tunnel {
+                crate::config::TunnelConfig::Local { .. } => crate::config::TunnelConfig::Remote {
+                    name,
+                    remote_addr: "0.0.0.0".to_string(),
+                    remote_port: 2222,
+                    local_host: "127.0.0.1".to_string(),
+                    local_port: 22,
+                    auto_start,
+                },
+                crate::config::TunnelConfig::Remote { .. } => crate::config::TunnelConfig::Dynamic {
+                    name,
+                    bind_addr: "127.0.0.1".to_string(),
+                    bind_port: 1080,
+                    auto_start,
+                },
+                crate::config::TunnelConfig::Dynamic { .. } => crate::config::TunnelConfig::Local {
+                    name,
+                    bind_addr: "127.0.0.1".to_string(),
+                    bind_port: 8080,
+                    remote_host: "localhost".to_string(),
+                    remote_port: 80,
+                    auto_start,
+                },
+            };
+        }
+    }
+
+    fn toggle_tunnel_auto_start(&mut self) {
+        if let Some(tunnel) = self.tunnel_edit_draft.as_mut() {
+            match tunnel {
+                crate::config::TunnelConfig::Local { auto_start, .. } => {
+                    *auto_start = !*auto_start
+                }
+                crate::config::TunnelConfig::Remote { auto_start, .. } => {
+                    *auto_start = !*auto_start
+                }
+                crate::config::TunnelConfig::Dynamic { auto_start, .. } => {
+                    *auto_start = !*auto_start
+                }
+            }
+        }
     }
 
     async fn handle_keys_key(&mut self, key: crossterm::event::KeyEvent) -> Result<()> {
@@ -3935,8 +5243,8 @@ impl App {
                 }
             }
             KeyCode::Down | KeyCode::Char('j') => {
-                // Max items: Name(0), Host(1), Port(2), User(3), Auth(4), Remember(5)
-                if self.detail_view_item_index < 5 {
+                // Max items: Name, Host, Port, User, Auth, Remember, Proxy, Tunnels
+                if self.detail_view_item_index < 7 {
                     self.detail_view_item_index += 1;
                 }
             }
@@ -3954,6 +5262,8 @@ impl App {
     async fn start_detail_edit(&mut self) -> Result<()> {
         let mut initial_value = None;
         let mut is_toggle = false;
+        let mut open_proxy = false;
+        let mut open_tunnel_picker = false;
 
         if let Some(host) = self.current_edit_host() {
             match self.detail_view_item_index {
@@ -3963,8 +5273,20 @@ impl App {
                 3 => initial_value = Some(host.username.clone()),
                 4 => is_toggle = true,
                 5 => is_toggle = true,
+                6 => open_proxy = true,
+                7 => open_tunnel_picker = true,
                 _ => {}
             }
+        }
+
+        if open_proxy {
+            self.open_proxy_edit();
+            return Ok(());
+        }
+
+        if open_tunnel_picker {
+            self.open_tunnel_picker();
+            return Ok(());
         }
 
         if is_toggle {

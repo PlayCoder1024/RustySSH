@@ -54,6 +54,14 @@ pub fn render_state(frame: &mut Frame, state: &RenderState, area: Rect) {
         render_host_edit_overlay(frame, state, area);
     }
 
+    if state.proxy_edit_visible {
+        render_proxy_edit_overlay(frame, state, area);
+    }
+
+    if state.tunnel_picker_visible {
+        render_tunnel_picker_overlay(frame, state, area);
+    }
+
     if state.delete_confirm_visible {
         render_delete_confirm_overlay(frame, state, area);
     }
@@ -518,7 +526,7 @@ fn render_host_edit_overlay(frame: &mut Frame, state: &RenderState, area: Rect) 
 
     // Calculate overlay size and position (centered)
     let width = 68u16.min(area.width.saturating_sub(4));
-    let height = 13u16.min(area.height.saturating_sub(4));
+    let height = 15u16.min(area.height.saturating_sub(4));
     let x = area.x + (area.width.saturating_sub(width)) / 2;
     let y = area.y + (area.height.saturating_sub(height)) / 2;
     let overlay_area = Rect::new(x, y, width, height);
@@ -573,28 +581,7 @@ fn render_host_edit_overlay(frame: &mut Frame, state: &RenderState, area: Rect) 
     };
 
     if let Some(host) = edit_host {
-        let auth_str = match &host.auth {
-            crate::config::AuthMethod::Password => "Password".to_string(),
-            crate::config::AuthMethod::KeyFile { .. } => "Key File".to_string(),
-            crate::config::AuthMethod::Agent => "Agent".to_string(),
-            crate::config::AuthMethod::Certificate { .. } => "Certificate".to_string(),
-        };
-
-        let items = vec![
-            ("Name", host.name.clone()),
-            ("Hostname", host.hostname.clone()),
-            ("Port", host.port.to_string()),
-            ("User", host.username.clone()),
-            ("Auth Method", auth_str),
-            (
-                "Remember Pwd",
-                if host.remember_password {
-                    "Yes".to_string()
-                } else {
-                    "No".to_string()
-                },
-            ),
-        ];
+        let items = host_detail_items(host);
 
         let mut lines = Vec::new();
         lines.push(Line::from(""));
@@ -685,6 +672,355 @@ fn render_host_edit_overlay(frame: &mut Frame, state: &RenderState, area: Rect) 
     };
     let hints_para = Paragraph::new(hints).alignment(Alignment::Center);
     frame.render_widget(hints_para, chunks[1]);
+}
+
+fn host_detail_items(host: &crate::config::HostConfig) -> Vec<(String, String)> {
+    let auth_str = match &host.auth {
+        crate::config::AuthMethod::Password => "Password".to_string(),
+        crate::config::AuthMethod::KeyFile { .. } => "Key File".to_string(),
+        crate::config::AuthMethod::Agent => "Agent".to_string(),
+        crate::config::AuthMethod::Certificate { .. } => "Certificate".to_string(),
+    };
+
+    vec![
+        ("Name".to_string(), host.name.clone()),
+        ("Hostname".to_string(), host.hostname.clone()),
+        ("Port".to_string(), host.port.to_string()),
+        ("User".to_string(), host.username.clone()),
+        ("Auth Method".to_string(), auth_str),
+        (
+            "Remember Pwd".to_string(),
+            if host.remember_password {
+                "Yes".to_string()
+            } else {
+                "No".to_string()
+            },
+        ),
+        ("Proxy".to_string(), proxy_summary(&host.proxy)),
+        ("Tunnels".to_string(), tunnels_summary(&host.tunnels)),
+    ]
+}
+
+fn proxy_summary(proxy: &Option<crate::config::ProxyConfig>) -> String {
+    match proxy {
+        None => "None".to_string(),
+        Some(crate::config::ProxyConfig::JumpHost { host }) => {
+            format!("JumpHost: {}", jump_host_ref_display(host))
+        }
+        Some(crate::config::ProxyConfig::Socks5 {
+            address, port, ..
+        }) => format!("SOCKS5: {}:{}", address, port),
+        Some(crate::config::ProxyConfig::Socks4 { address, port, .. }) => {
+            format!("SOCKS4: {}:{}", address, port)
+        }
+        Some(crate::config::ProxyConfig::Http { address, port, .. }) => {
+            format!("HTTP: {}:{}", address, port)
+        }
+        Some(crate::config::ProxyConfig::ProxyCommand { command }) => {
+            format!("ProxyCommand: {}", command)
+        }
+    }
+}
+
+fn jump_host_ref_display(host: &crate::config::JumpHostRef) -> String {
+    match host {
+        crate::config::JumpHostRef::ByUuid(id) => id.to_string(),
+        crate::config::JumpHostRef::ByHostname(name) => name.clone(),
+        crate::config::JumpHostRef::ByName(name) => name.clone(),
+    }
+}
+
+fn tunnels_summary(tunnels: &[crate::config::TunnelRef]) -> String {
+    if tunnels.is_empty() {
+        return "None".to_string();
+    }
+    let names: Vec<_> = tunnels.iter().map(|t| t.name()).collect();
+    names.join(", ")
+}
+
+fn render_proxy_edit_overlay(frame: &mut Frame, state: &RenderState, area: Rect) {
+    use ratatui::widgets::Clear;
+
+    let theme = &state.theme;
+
+    let width = 62u16.min(area.width.saturating_sub(4));
+    let height = 12u16.min(area.height.saturating_sub(4));
+    let x = area.x + (area.width.saturating_sub(width)) / 2;
+    let y = area.y + (area.height.saturating_sub(height)) / 2;
+    let overlay_area = Rect::new(x, y, width, height);
+
+    frame.render_widget(Clear, overlay_area);
+
+    let block = Block::default()
+        .title(Line::from(vec![
+            Span::styled(" 󰖷 ", Style::default().fg(theme.accent_primary())),
+            Span::styled("Proxy Configuration", theme.title()),
+            Span::styled(" ", theme.title()),
+        ]))
+        .title_alignment(Alignment::Center)
+        .borders(Borders::ALL)
+        .border_style(theme.border_focus())
+        .style(Style::default().bg(theme.bg_panel()));
+
+    let inner = block.inner(overlay_area);
+    frame.render_widget(block, overlay_area);
+
+    let chunks = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([Constraint::Min(1), Constraint::Length(1)])
+        .split(inner);
+
+    let mut visible_hosts = Vec::new();
+    for group in &state.config.groups {
+        if group.expanded {
+            for host in &group.hosts {
+                visible_hosts.push(host);
+            }
+        }
+    }
+    for host in &state.config.hosts {
+        visible_hosts.push(host);
+    }
+
+    let edit_host = if state.host_edit_is_new {
+        state.host_edit_draft.as_ref()
+    } else {
+        visible_hosts.get(state.selected_host_index).copied()
+    };
+
+    let mut lines = Vec::new();
+    lines.push(Line::from(""));
+
+    if let Some(host) = edit_host {
+        let fields = proxy_fields_for_display(&host.proxy);
+
+        for (i, (label, value)) in fields.iter().enumerate() {
+            let is_selected = i == state.proxy_edit_field_index;
+            let is_active_edit = is_selected && state.proxy_editing;
+            let row_bg = if is_selected {
+                theme.bg_selected()
+            } else {
+                theme.bg_panel()
+            };
+
+            let display_value = if is_active_edit {
+                format!("{}|", state.proxy_temp_buffer)
+            } else {
+                value.clone()
+            };
+
+            let label_style = if is_selected {
+                Style::default()
+                    .fg(theme.accent_primary())
+                    .bg(row_bg)
+                    .add_modifier(Modifier::BOLD)
+            } else {
+                Style::default().fg(theme.fg_dim()).bg(row_bg)
+            };
+
+            let value_style = if is_selected {
+                Style::default().fg(theme.fg_bright()).bg(row_bg)
+            } else {
+                theme.text().bg(row_bg)
+            };
+
+            lines.push(Line::from(vec![
+                Span::styled(format!("{:12}", label), label_style),
+                Span::styled(" │ ", theme.text_dim().bg(row_bg)),
+                Span::styled(display_value, value_style),
+            ]));
+        }
+    } else {
+        lines.push(Line::from(vec![Span::styled(
+            "No host selected",
+            theme.text_dim(),
+        )]));
+    }
+
+    frame.render_widget(Paragraph::new(lines), chunks[0]);
+
+    let hints = if state.proxy_editing {
+        Line::from(vec![
+            Span::styled("Enter", theme.key_hint()),
+            Span::styled(":Save  ", theme.text_dim()),
+            Span::styled("Esc", theme.key_hint()),
+            Span::styled(":Cancel", theme.text_dim()),
+        ])
+    } else {
+        Line::from(vec![
+            Span::styled("Enter", theme.key_hint()),
+            Span::styled(":Edit/Toggle  ", theme.text_dim()),
+            Span::styled("↑↓", theme.key_hint()),
+            Span::styled(":Navigate  ", theme.text_dim()),
+            Span::styled("Esc", theme.key_hint()),
+            Span::styled(":Close", theme.text_dim()),
+        ])
+    };
+
+    frame.render_widget(Paragraph::new(hints).alignment(Alignment::Center), chunks[1]);
+}
+
+fn proxy_fields_for_display(
+    proxy: &Option<crate::config::ProxyConfig>,
+) -> Vec<(String, String)> {
+    let type_label = match proxy {
+        None => "None",
+        Some(crate::config::ProxyConfig::JumpHost { .. }) => "JumpHost",
+        Some(crate::config::ProxyConfig::Socks5 { .. }) => "SOCKS5",
+        Some(crate::config::ProxyConfig::Socks4 { .. }) => "SOCKS4",
+        Some(crate::config::ProxyConfig::Http { .. }) => "HTTP",
+        Some(crate::config::ProxyConfig::ProxyCommand { .. }) => "ProxyCommand",
+    };
+
+    let mut fields = vec![("Type".to_string(), type_label.to_string())];
+
+    match proxy {
+        Some(crate::config::ProxyConfig::JumpHost { host }) => {
+            fields.push(("Host".to_string(), jump_host_ref_display(host)));
+        }
+        Some(crate::config::ProxyConfig::Socks5 {
+            address,
+            port,
+            username,
+            password,
+        }) => {
+            fields.push(("Address".to_string(), address.clone()));
+            fields.push(("Port".to_string(), port.to_string()));
+            fields.push((
+                "Username".to_string(),
+                username.clone().unwrap_or_else(|| "-".to_string()),
+            ));
+            fields.push((
+                "Password".to_string(),
+                if password.is_some() {
+                    "******".to_string()
+                } else {
+                    "-".to_string()
+                },
+            ));
+        }
+        Some(crate::config::ProxyConfig::Socks4 {
+            address,
+            port,
+            user_id,
+        }) => {
+            fields.push(("Address".to_string(), address.clone()));
+            fields.push(("Port".to_string(), port.to_string()));
+            fields.push((
+                "User ID".to_string(),
+                user_id.clone().unwrap_or_else(|| "-".to_string()),
+            ));
+        }
+        Some(crate::config::ProxyConfig::Http {
+            address,
+            port,
+            username,
+            password,
+        }) => {
+            fields.push(("Address".to_string(), address.clone()));
+            fields.push(("Port".to_string(), port.to_string()));
+            fields.push((
+                "Username".to_string(),
+                username.clone().unwrap_or_else(|| "-".to_string()),
+            ));
+            fields.push((
+                "Password".to_string(),
+                if password.is_some() {
+                    "******".to_string()
+                } else {
+                    "-".to_string()
+                },
+            ));
+        }
+        Some(crate::config::ProxyConfig::ProxyCommand { command }) => {
+            fields.push(("Command".to_string(), command.clone()));
+        }
+        None => {}
+    }
+
+    fields
+}
+
+fn render_tunnel_picker_overlay(frame: &mut Frame, state: &RenderState, area: Rect) {
+    use ratatui::widgets::Clear;
+
+    let theme = &state.theme;
+
+    let width = 62u16.min(area.width.saturating_sub(4));
+    let height = 14u16.min(area.height.saturating_sub(4));
+    let x = area.x + (area.width.saturating_sub(width)) / 2;
+    let y = area.y + (area.height.saturating_sub(height)) / 2;
+    let overlay_area = Rect::new(x, y, width, height);
+
+    frame.render_widget(Clear, overlay_area);
+
+    let block = Block::default()
+        .title(Line::from(vec![
+            Span::styled(" 󰛳 ", Style::default().fg(theme.accent_primary())),
+            Span::styled("Select Tunnels", theme.title()),
+            Span::styled(" ", theme.title()),
+        ]))
+        .title_alignment(Alignment::Center)
+        .borders(Borders::ALL)
+        .border_style(theme.border_focus())
+        .style(Style::default().bg(theme.bg_panel()));
+
+    let inner = block.inner(overlay_area);
+    frame.render_widget(block, overlay_area);
+
+    let chunks = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([Constraint::Min(1), Constraint::Length(1)])
+        .split(inner);
+
+    let mut lines = Vec::new();
+    lines.push(Line::from(""));
+
+    if state.config.tunnels.is_empty() {
+        lines.push(Line::from(vec![Span::styled(
+            "No tunnels defined",
+            theme.text_dim(),
+        )]));
+    } else {
+        for (idx, tunnel) in state.config.tunnels.iter().enumerate() {
+            let selected = state
+                .tunnel_picker_selected
+                .iter()
+                .any(|t| t == tunnel.name());
+            let is_cursor = idx == state.tunnel_picker_index;
+            let row_bg = if is_cursor {
+                theme.bg_selected()
+            } else {
+                theme.bg_panel()
+            };
+            let marker = if selected { "[x]" } else { "[ ]" };
+
+            lines.push(Line::from(vec![
+                Span::styled(
+                    format!(" {} ", marker),
+                    Style::default().fg(theme.accent_primary()).bg(row_bg),
+                ),
+                Span::styled(tunnel.name().to_string(), theme.text().bg(row_bg)),
+                Span::styled(
+                    format!("  ({})", tunnel.type_label()),
+                    theme.text_dim().bg(row_bg),
+                ),
+            ]));
+        }
+    }
+
+    frame.render_widget(Paragraph::new(lines), chunks[0]);
+
+    let hints = Line::from(vec![
+        Span::styled("Space", theme.key_hint()),
+        Span::styled(":Toggle  ", theme.text_dim()),
+        Span::styled("Enter", theme.key_hint()),
+        Span::styled(":Save  ", theme.text_dim()),
+        Span::styled("Esc", theme.key_hint()),
+        Span::styled(":Cancel", theme.text_dim()),
+    ]);
+
+    frame.render_widget(Paragraph::new(hints).alignment(Alignment::Center), chunks[1]);
 }
 
 fn find_host_by_id<'a>(
@@ -1000,28 +1336,7 @@ fn render_details_panel_state(frame: &mut Frame, state: &RenderState, area: Rect
     }
 
     if let Some(host) = visible_hosts.get(state.selected_host_index) {
-        let auth_str = match &host.auth {
-            crate::config::AuthMethod::Password => "Password".to_string(),
-            crate::config::AuthMethod::KeyFile { .. } => "Key File".to_string(),
-            crate::config::AuthMethod::Agent => "Agent".to_string(),
-            crate::config::AuthMethod::Certificate { .. } => "Certificate".to_string(),
-        };
-
-        let items = vec![
-            ("Name", host.name.clone()),
-            ("Hostname", host.hostname.clone()),
-            ("Port", host.port.to_string()),
-            ("User", host.username.clone()),
-            ("Auth Method", auth_str),
-            (
-                "Remember Pwd",
-                if host.remember_password {
-                    "Yes".to_string()
-                } else {
-                    "No".to_string()
-                },
-            ),
-        ];
+        let items = host_detail_items(host);
 
         let mut y = inner.y;
         for (i, (label, value)) in items.iter().enumerate() {

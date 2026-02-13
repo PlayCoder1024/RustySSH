@@ -167,6 +167,7 @@ Main configuration struct:
 ```rust
 pub struct Config {
     pub settings: Settings,
+    pub tunnels: Vec<TunnelConfig>,
     pub groups: Vec<HostGroup>,
     pub hosts: Vec<HostConfig>,
 }
@@ -209,7 +210,7 @@ pub struct HostConfig {
     pub auth: AuthMethod,
     pub proxy: Option<ProxyConfig>,
     pub tags: Vec<String>,
-    pub tunnels: Vec<TunnelConfig>,
+    pub tunnels: Vec<TunnelRef>,
     pub startup_commands: Vec<String>,
     pub environment: HashMap<String, String>,
     pub notes: String,

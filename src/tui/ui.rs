@@ -113,7 +113,7 @@ fn render_status_bar(frame: &mut Frame, app: &App, area: Rect) {
         View::Sftp => {
             "󰌑 Tab:Switch  Enter:Open  Backspace:Parent  c:Copy  m:Move  d:Delete  Esc:Back  q:Exit"
         }
-        View::Tunnels => "󰌑 Enter:Toggle  n:New  d:Delete  Esc:Back",
+        View::Tunnels => "󰌑 Enter:Edit  n:New  d:Delete  Esc:Back",
         View::Keys => "󰌑 Enter:View  n:Generate  i:Import  d:Delete  Esc:Back",
         View::Settings => "󰌑 Enter:Edit  Esc:Back",
         View::Help => "󰌑 Esc/q/?:Close",
@@ -198,7 +198,7 @@ fn render_status_bar_state(frame: &mut Frame, state: &RenderState, area: Rect) {
             "{}Tab:Switch  Enter:Open  c:Copy  m:Move  d:Delete  Esc:Back",
             kb
         ),
-        View::Tunnels => format!("{}Enter:Toggle  n:New  d:Delete  Esc:Back", kb),
+        View::Tunnels => format!("{}Enter:Edit  n:New  d:Delete  Esc:Back", kb),
         View::Keys => format!("{}Enter:View  n:Generate  i:Import  d:Delete  Esc:Back", kb),
         View::Settings => format!("{}Enter:Edit  Esc:Back", kb),
         View::Help => format!("{}Esc/q/?:Close", kb),
