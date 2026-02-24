@@ -1,0 +1,45 @@
+services:
+  direct-01:
+    build: &ssh_build
+      context: .
+      dockerfile_inline: |
+        FROM fedora:latest
+        RUN dnf install -y openssh-server && ssh-keygen -A
+        RUN echo 'root:password123' | chpasswd
+        RUN sed -i 's/#PermitRootLogin.*/PermitRootLogin yes/' /etc/ssh/sshd_config
+        CMD ["/usr/sbin/sshd", "-D"]
+    ports: ["2201:22"]
+    networks: [test-net]
+
+  direct-02:
+    build: *ssh_build
+    ports: ["2202:22"]
+    networks: [test-net]
+
+  direct-03:
+    build: *ssh_build
+    ports: ["2203:22"]
+    networks: [test-net]
+
+  direct-04:
+    build: *ssh_build
+    ports: ["2204:22"]
+    networks: [test-net]
+
+  direct-05:
+    build: *ssh_build
+    ports: ["2205:22"]
+    networks: [test-net]
+
+  jump-host:
+    build: *ssh_build
+    ports: ["2222:22"]
+    networks: [test-net]
+
+  internal-node:
+    build: *ssh_build
+    networks: [test-net]
+
+networks:
+  test-net:
+    driver: bridge
