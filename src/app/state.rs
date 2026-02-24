@@ -17,6 +17,8 @@ use tokio::sync::mpsc;
 use tracing::{debug, info, warn};
 use uuid::Uuid;
 
+const MAX_PASSWORD_ATTEMPTS: u8 = 3;
+
 /// Current application view
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum View {
@@ -337,10 +339,16 @@ pub struct App {
             Result<(SshConnection, std::collections::HashMap<Uuid, String>), anyhow::Error>,
         >,
     >,
+    /// Passwords used for the current pending connection (for retry logic)
+    pending_connection_passwords: HashMap<Uuid, String>,
     /// Host ID currently being connected
     pending_connection_host_id: Option<Uuid>,
     /// Hosts to save passwords for after successful connection
     pending_hosts_to_save: Vec<Uuid>,
+    /// Hosts whose passwords were sourced from saved credentials
+    pending_saved_password_hosts: Vec<Uuid>,
+    /// Failed password attempts for the current connection
+    pending_password_attempts: u8,
     /// Find overlay visible in session view
     pub find_overlay_visible: bool,
     /// Find search query
@@ -504,8 +512,11 @@ impl App {
             connecting_to_host: None,
             connection_start_time: None,
             pending_connection: None,
+            pending_connection_passwords: HashMap::new(),
             pending_connection_host_id: None,
             pending_hosts_to_save: Vec::new(),
+            pending_saved_password_hosts: Vec::new(),
+            pending_password_attempts: 0,
             find_overlay_visible: false,
             find_query: String::new(),
             find_match_index: 0,
@@ -1156,7 +1167,12 @@ impl App {
                             }
                             Ok(Err(e)) => {
                                 // Connection failed
-                                self.handle_connection_failure(&e.to_string(), hosts_to_save)
+                                self.handle_connection_failure(
+                                    host_id,
+                                    host_name,
+                                    &e.to_string(),
+                                    hosts_to_save,
+                                )
                                     .await;
                             }
                             Err(e) => {
@@ -1544,7 +1560,10 @@ impl App {
                     self.connecting_to_host = None;
                     self.connection_start_time = None;
                     self.pending_connection_host_id = None;
+                    self.pending_connection_passwords.clear();
                     self.pending_hosts_to_save.clear();
+                    self.pending_saved_password_hosts.clear();
+                    self.pending_password_attempts = 0;
                     self.status_message = Some("Connection cancelled".to_string());
                 }
             }
@@ -2368,16 +2387,15 @@ impl App {
     async fn connect_to_host(&mut self, host: HostConfig) -> Result<()> {
         info!(target: "app", "Initiating connection to {}", host.name);
         self.status_message = Some(format!("Connecting to {}...", host.name));
+        self.pending_connection_passwords.clear();
+        self.pending_saved_password_hosts.clear();
+        self.pending_password_attempts = 0;
 
         // Get terminal size
         // Account for: status bar (2 lines), tab bar (2 lines), terminal block borders (2 lines top+bottom, 2 cols left+right)
         let size = self.tui.size()?;
         let _cols = size.width.saturating_sub(2) as u32; // Subtract block borders (left + right)
         let _rows = size.height.saturating_sub(6) as u32; // Subtract: status bar (2) + tab bar (2) + block borders (2)
-
-        // Clone host name for later use
-        let host_name = host.name.clone();
-        let host_id = host.id;
 
         // Resolve the full proxy chain
         let proxy_chain = self.config.resolve_proxy_chain(&host);
@@ -2390,6 +2408,7 @@ impl App {
         let mut passwords: std::collections::HashMap<uuid::Uuid, String> =
             std::collections::HashMap::new();
         let mut hosts_to_save: Vec<uuid::Uuid> = Vec::new();
+        let mut saved_password_hosts: Vec<uuid::Uuid> = Vec::new();
 
         // Check if any host in the chain needs password auth
         let hosts_needing_password: Vec<_> = proxy_chain
@@ -2526,6 +2545,7 @@ impl App {
                 if host_config.remember_password && self.credentials.is_unlocked() {
                     if let Ok(Some(saved_pwd)) = self.credentials.get_password(host_config.id) {
                         passwords.insert(host_config.id, saved_pwd);
+                        saved_password_hosts.push(host_config.id);
                         continue;
                     }
                 }
@@ -2587,11 +2607,32 @@ impl App {
             }
         }
 
+        self.start_connection_attempt(
+            &host,
+            proxy_chain,
+            passwords,
+            hosts_to_save,
+            saved_password_hosts,
+        )?;
+
+        Ok(())
+    }
+
+    fn start_connection_attempt(
+        &mut self,
+        host: &HostConfig,
+        proxy_chain: Vec<HostConfig>,
+        passwords: std::collections::HashMap<uuid::Uuid, String>,
+        hosts_to_save: Vec<uuid::Uuid>,
+        saved_password_hosts: Vec<uuid::Uuid>,
+    ) -> Result<()> {
         // Set connecting state for UI feedback
-        self.connecting_to_host = Some(host_name.clone());
+        self.connecting_to_host = Some(host.name.clone());
         self.connection_start_time = Some(Instant::now());
-        self.pending_connection_host_id = Some(host_id);
+        self.pending_connection_host_id = Some(host.id);
         self.pending_hosts_to_save = hosts_to_save;
+        self.pending_saved_password_hosts = saved_password_hosts;
+        self.pending_connection_passwords = passwords.clone();
 
         // Spawn connection in background (non-blocking)
         let handle = tokio::task::spawn_blocking(move || {
@@ -2686,6 +2727,116 @@ impl App {
         Ok(())
     }
 
+    fn is_password_auth_failure(&self, error_msg: &str) -> bool {
+        let msg = error_msg.to_lowercase();
+        msg.contains("password auth failed")
+            || msg.contains("password authentication")
+            || msg.contains("password required")
+            || msg.contains("password")
+    }
+
+    async fn maybe_retry_saved_passwords(
+        &mut self,
+        host_id: Uuid,
+        host_name: &str,
+        hosts_to_save: Vec<Uuid>,
+    ) -> Result<bool> {
+        if self.pending_saved_password_hosts.is_empty() {
+            return Ok(false);
+        }
+
+        let host = match self.config.hosts.iter().find(|h| h.id == host_id) {
+            Some(h) => h.clone(),
+            None => return Ok(false),
+        };
+
+        let proxy_chain = self.config.resolve_proxy_chain(&host);
+        let mut passwords = self.pending_connection_passwords.clone();
+        let mut updated_hosts_to_save = hosts_to_save;
+        let hosts_to_prompt: Vec<_> = proxy_chain
+            .iter()
+            .filter(|h| {
+                self.pending_saved_password_hosts
+                    .iter()
+                    .any(|id| *id == h.id)
+            })
+            .filter(|h| matches!(h.auth, crate::config::AuthMethod::Password))
+            .collect();
+
+        if hosts_to_prompt.is_empty() {
+            return Ok(false);
+        }
+
+        self.pending_password_attempts = self.pending_password_attempts.saturating_add(1);
+        if self.pending_password_attempts >= MAX_PASSWORD_ATTEMPTS {
+            return Ok(false);
+        }
+
+        // Exit TUI mode to prompt for new passwords
+        self.events.pause();
+        tokio::time::sleep(Duration::from_millis(50)).await;
+        self.tui.exit()?;
+
+        println!();
+        println!(
+            "🔐 Saved password failed for {}. Please enter a new password (attempt {}/{}).",
+            host_name, self.pending_password_attempts, MAX_PASSWORD_ATTEMPTS
+        );
+
+        for host_config in hosts_to_prompt {
+            let context = if host_config.id == host_id {
+                "target".to_string()
+            } else {
+                "jump host".to_string()
+            };
+
+            print!(
+                "Password for {}@{} ({}): ",
+                host_config.username, host_config.hostname, context
+            );
+            let _ = std::io::stdout().flush();
+
+            match rpassword::read_password() {
+                Ok(pwd) => {
+                    passwords.insert(host_config.id, pwd);
+                    if host_config.remember_password
+                        && !updated_hosts_to_save.contains(&host_config.id)
+                    {
+                        updated_hosts_to_save.push(host_config.id);
+                    }
+                }
+                Err(e) => {
+                    std::thread::sleep(std::time::Duration::from_millis(100));
+                    self.tui.enter()?;
+                    self.events.resume();
+                    self.tui.clear()?;
+                    self.status_message = Some(format!("Failed to read password: {}", e));
+                    return Ok(true);
+                }
+            }
+        }
+
+        std::thread::sleep(std::time::Duration::from_millis(100));
+        self.tui.enter()?;
+        self.events.resume();
+        self.tui.clear()?;
+
+        self.status_message = Some(format!(
+            "Retrying connection to {}...",
+            host.name
+        ));
+
+        self.start_connection_attempt(
+            &host,
+            proxy_chain,
+            passwords,
+            updated_hosts_to_save,
+            self.pending_saved_password_hosts.clone(),
+        )?;
+
+        Ok(true)
+    }
+
     /// Handle successful connection (called from Tick when connection completes)
     async fn handle_connection_success(
         &mut self,
@@ -2697,6 +2848,9 @@ impl App {
     ) -> Result<()> {
         info!(target: "app", "Connection successful to {}", host_name);
         let connection_id = connection.id;
+        self.pending_connection_passwords.clear();
+        self.pending_saved_password_hosts.clear();
+        self.pending_password_attempts = 0;
 
         // Get terminal size
         let size = self.tui.size()?;
@@ -2779,17 +2933,54 @@ impl App {
     }
 
     /// Handle connection failure (called from Tick when connection fails)
-    async fn handle_connection_failure(&mut self, error_msg: &str, hosts_to_save: Vec<Uuid>) {
+    async fn handle_connection_failure(
+        &mut self,
+        host_id: Option<Uuid>,
+        host_name: String,
+        error_msg: &str,
+        hosts_to_save: Vec<Uuid>,
+    ) {
         warn!(target: "app", "Connection failed: {}", error_msg);
-        // Connection failed - if we used saved passwords, clear them
-        for host_to_save_id in &hosts_to_save {
-            if self.credentials.has_saved_password(*host_to_save_id) {
-                if let Err(del_err) = self.credentials.delete_password(*host_to_save_id).await {
-                    warn!(target: "app", "Failed to delete invalid password: {}", del_err);
+
+        if self.is_password_auth_failure(error_msg) {
+            if let Some(host_id) = host_id {
+                match self
+                    .maybe_retry_saved_passwords(host_id, &host_name, hosts_to_save)
+                    .await
+                {
+                    Ok(true) => return,
+                    Ok(false) => {}
+                    Err(e) => {
+                        self.pending_connection_passwords.clear();
+                        self.pending_saved_password_hosts.clear();
+                        self.pending_password_attempts = 0;
+                        self.status_message = Some(format!("Failed to retry connection: {}", e));
+                        self.view = View::Connections;
+                        return;
+                    }
                 }
             }
         }
+
+        let return_home = self.pending_password_attempts >= MAX_PASSWORD_ATTEMPTS;
+
+        if self.is_password_auth_failure(error_msg) {
+            for host_id in &self.pending_saved_password_hosts {
+                if self.credentials.has_saved_password(*host_id) {
+                    if let Err(del_err) = self.credentials.delete_password(*host_id).await {
+                        warn!(target: "app", "Failed to delete invalid password: {}", del_err);
+                    }
+                }
+            }
+        }
+
+        self.pending_connection_passwords.clear();
+        self.pending_saved_password_hosts.clear();
+        self.pending_password_attempts = 0;
         self.status_message = Some(format!("Connection failed: {}", error_msg));
+        if return_home {
+            self.view = View::Connections;
+        }
     }
 
     fn start_autostart_tunnels(
