@@ -11,6 +11,13 @@ RustySSH is a terminal-based SSH connection manager with a beautiful, btop-inspi
 > [!IMPORTANT]
 > This project is **totally vibecoding**. Every line of code is driven by LLM.
 
+## 🧪 Demo
+
+<p align="center">
+  <img src="images/demo.gif" alt="RustySSH demo" style="max-width: 980px; width: 100%; height: auto;" />
+</p>
+
+
 ## ✨ Features
 
 - **🖥️ Beautiful TUI** - Dark theme with Tokyo Night colors, responsive layout
