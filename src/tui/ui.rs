@@ -97,6 +97,12 @@ pub fn render_with_state(frame: &mut Frame, state: &RenderState) -> Option<Rect>
         popup.render(frame);
     }
 
+    // Render password overlay last to stay on top
+    if state.password_overlay_visible {
+        use crate::tui::widgets::render_password_overlay;
+        render_password_overlay(frame, state, area);
+    }
+
     terminal_area
 }
 

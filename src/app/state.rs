@@ -19,6 +19,55 @@ use uuid::Uuid;
 
 const MAX_PASSWORD_ATTEMPTS: u8 = 3;
 
+#[derive(Debug, Clone)]
+enum PasswordFlowStage {
+    MasterCreate,
+    MasterConfirm { first: String },
+    MasterUnlock,
+    HostPasswords { remaining: Vec<HostConfig> },
+    RetryPasswords {
+        remaining: Vec<HostConfig>,
+        attempt: u8,
+        host_name: String,
+    },
+}
+
+#[derive(Debug, Clone)]
+struct PasswordFlow {
+    host: HostConfig,
+    proxy_chain: Vec<HostConfig>,
+    hosts_needing_password: Vec<HostConfig>,
+    passwords: HashMap<Uuid, String>,
+    hosts_to_save: Vec<Uuid>,
+    saved_password_hosts: Vec<Uuid>,
+    stage: PasswordFlowStage,
+}
+
+#[derive(Debug, Clone)]
+struct PasswordOverlay {
+    visible: bool,
+    title: String,
+    prompt: String,
+    context: Option<String>,
+    input: String,
+    error: Option<String>,
+    hint: String,
+}
+
+impl Default for PasswordOverlay {
+    fn default() -> Self {
+        Self {
+            visible: false,
+            title: String::new(),
+            prompt: String::new(),
+            context: None,
+            input: String::new(),
+            error: None,
+            hint: String::new(),
+        }
+    }
+}
+
 /// Current application view
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum View {
@@ -94,6 +143,20 @@ pub struct RenderState {
     pub find_match_index: usize,
     /// Total find matches count
     pub find_match_count: usize,
+    /// Password overlay visible
+    pub password_overlay_visible: bool,
+    /// Password overlay title
+    pub password_overlay_title: String,
+    /// Password overlay prompt
+    pub password_overlay_prompt: String,
+    /// Password overlay context line
+    pub password_overlay_context: Option<String>,
+    /// Password overlay input buffer
+    pub password_overlay_input: String,
+    /// Password overlay error message
+    pub password_overlay_error: Option<String>,
+    /// Password overlay hint line
+    pub password_overlay_hint: String,
     /// Host search overlay visible (connections view)
     pub host_search_visible: bool,
     /// Host search query
@@ -349,6 +412,10 @@ pub struct App {
     pending_saved_password_hosts: Vec<Uuid>,
     /// Failed password attempts for the current connection
     pending_password_attempts: u8,
+    /// Active password prompt flow
+    password_flow: Option<PasswordFlow>,
+    /// Password overlay state
+    password_overlay: PasswordOverlay,
     /// Find overlay visible in session view
     pub find_overlay_visible: bool,
     /// Find search query
@@ -517,6 +584,8 @@ impl App {
             pending_hosts_to_save: Vec::new(),
             pending_saved_password_hosts: Vec::new(),
             pending_password_attempts: 0,
+            password_flow: None,
+            password_overlay: PasswordOverlay::default(),
             find_overlay_visible: false,
             find_query: String::new(),
             find_match_index: 0,
@@ -825,6 +894,13 @@ impl App {
                     find_query: self.find_query.clone(),
                     find_match_index: self.find_match_index,
                     find_match_count: self.find_matches.len(),
+                    password_overlay_visible: self.password_overlay.visible,
+                    password_overlay_title: self.password_overlay.title.clone(),
+                    password_overlay_prompt: self.password_overlay.prompt.clone(),
+                    password_overlay_context: self.password_overlay.context.clone(),
+                    password_overlay_input: self.password_overlay.input.clone(),
+                    password_overlay_error: self.password_overlay.error.clone(),
+                    password_overlay_hint: self.password_overlay.hint.clone(),
                     host_search_visible: self.host_search_visible,
                     host_search_query: self.host_search_query.clone(),
                     host_search_results: self.host_search_results.clone(),
@@ -964,6 +1040,11 @@ impl App {
                         "Key event: code={:?}, modifiers={:?}, kind={:?}",
                         key.code, key.modifiers, key.kind
                     );
+                }
+
+                if self.password_overlay.visible {
+                    self.handle_password_overlay_key(key).await?;
+                    return Ok(true);
                 }
 
                 // Prioritize escape prefix handling (allows holding Ctrl or standard usage)
@@ -1265,6 +1346,10 @@ impl App {
     async fn handle_mouse(&mut self, mouse: MouseEvent) -> Result<()> {
         use crossterm::event::MouseButton;
         use MouseEventKind::*;
+
+        if self.password_overlay.visible {
+            return Ok(());
+        }
 
         if self.delete_confirm_visible {
             return Ok(());
@@ -2381,6 +2466,300 @@ impl App {
         }
     }
 
+    fn clear_password_overlay(&mut self) {
+        self.password_overlay.visible = false;
+        self.password_overlay.input.clear();
+        self.password_overlay.error = None;
+    }
+
+    fn set_password_overlay(&mut self, title: &str, prompt: String, context: Option<String>) {
+        self.password_overlay.visible = true;
+        self.password_overlay.title = title.to_string();
+        self.password_overlay.prompt = prompt;
+        self.password_overlay.context = context;
+        self.password_overlay.input.clear();
+        self.password_overlay.error = None;
+        self.password_overlay.hint = "Enter:Submit  Esc:Cancel".to_string();
+    }
+
+    fn set_password_overlay_error(&mut self, message: impl Into<String>) {
+        self.password_overlay.error = Some(message.into());
+        self.password_overlay.input.clear();
+    }
+
+    fn show_password_overlay_for_stage(&mut self) {
+        let Some(flow) = self.password_flow.clone() else {
+            self.clear_password_overlay();
+            return;
+        };
+
+        let host_display_name = |host: &HostConfig| {
+            if host.name.is_empty() {
+                host.hostname.clone()
+            } else {
+                host.name.clone()
+            }
+        };
+
+        match &flow.stage {
+            PasswordFlowStage::MasterCreate => {
+                self.set_password_overlay(
+                    "Master Password Setup",
+                    "Create master password".to_string(),
+                    Some("Encrypts saved connection passwords".to_string()),
+                );
+            }
+            PasswordFlowStage::MasterConfirm { .. } => {
+                self.set_password_overlay(
+                    "Master Password Setup",
+                    "Confirm master password".to_string(),
+                    Some("Must match the first entry".to_string()),
+                );
+            }
+            PasswordFlowStage::MasterUnlock => {
+                self.set_password_overlay(
+                    "Master Password",
+                    "Enter master password".to_string(),
+                    None,
+                );
+            }
+            PasswordFlowStage::HostPasswords { remaining } => {
+                if let Some(host) = remaining.first() {
+                    let context = if host.id == flow.host.id {
+                        "target"
+                    } else {
+                        "jump host"
+                    };
+                    self.set_password_overlay(
+                        "Password Required",
+                        format!("Password for {}@{}", host.username, host.hostname),
+                        Some(format!("{} ({})", host_display_name(host), context)),
+                    );
+                } else {
+                    self.clear_password_overlay();
+                }
+            }
+            PasswordFlowStage::RetryPasswords {
+                remaining,
+                attempt,
+                host_name,
+            } => {
+                if let Some(host) = remaining.first() {
+                    self.set_password_overlay(
+                        "Retry Password",
+                        format!("New password for {}@{}", host.username, host.hostname),
+                        Some(format!(
+                            "Saved password failed for {} (attempt {}/{})",
+                            host_name, attempt, MAX_PASSWORD_ATTEMPTS
+                        )),
+                    );
+                } else {
+                    self.clear_password_overlay();
+                }
+            }
+        }
+    }
+
+    fn populate_saved_passwords(&mut self, flow: &mut PasswordFlow) {
+        if !self.credentials.is_unlocked() {
+            return;
+        }
+
+        for host in &flow.hosts_needing_password {
+            if host.remember_password {
+                if let Ok(Some(saved_pwd)) = self.credentials.get_password(host.id) {
+                    flow.passwords.insert(host.id, saved_pwd);
+                    if !flow.saved_password_hosts.contains(&host.id) {
+                        flow.saved_password_hosts.push(host.id);
+                    }
+                }
+            }
+        }
+    }
+
+    fn hosts_missing_passwords(&self, flow: &PasswordFlow) -> Vec<HostConfig> {
+        flow.hosts_needing_password
+            .iter()
+            .filter(|h| !flow.passwords.contains_key(&h.id))
+            .cloned()
+            .collect()
+    }
+
+    fn finish_password_flow(&mut self, flow: PasswordFlow) -> Result<()> {
+        let PasswordFlow {
+            host,
+            proxy_chain,
+            passwords,
+            hosts_to_save,
+            saved_password_hosts,
+            ..
+        } = flow;
+
+        self.password_flow = None;
+        self.clear_password_overlay();
+
+        self.start_connection_attempt(
+            &host,
+            proxy_chain,
+            passwords,
+            hosts_to_save,
+            saved_password_hosts,
+        )
+    }
+
+    fn advance_after_master(&mut self, mut flow: PasswordFlow) -> Result<()> {
+        self.populate_saved_passwords(&mut flow);
+        let remaining = self.hosts_missing_passwords(&flow);
+        if remaining.is_empty() {
+            return self.finish_password_flow(flow);
+        }
+
+        flow.stage = PasswordFlowStage::HostPasswords { remaining };
+        self.password_flow = Some(flow);
+        self.show_password_overlay_for_stage();
+        Ok(())
+    }
+
+    fn cancel_password_flow(&mut self, message: &str) {
+        if let Some(handle) = self.pending_connection.take() {
+            handle.abort();
+        }
+
+        self.password_flow = None;
+        self.clear_password_overlay();
+        self.pending_connection_passwords.clear();
+        self.pending_saved_password_hosts.clear();
+        self.pending_hosts_to_save.clear();
+        self.pending_password_attempts = 0;
+        self.pending_connection_host_id = None;
+        self.connecting_to_host = None;
+        self.connection_start_time = None;
+        self.status_message = Some(message.to_string());
+    }
+
+    async fn handle_password_overlay_key(
+        &mut self,
+        key: crossterm::event::KeyEvent,
+    ) -> Result<()> {
+        match key.code {
+            KeyCode::Esc => {
+                self.cancel_password_flow("Connection cancelled");
+            }
+            KeyCode::Enter => {
+                self.submit_password_input()?;
+            }
+            KeyCode::Backspace => {
+                self.password_overlay.input.pop();
+            }
+            KeyCode::Char(c) => {
+                self.password_overlay.input.push(c);
+            }
+            _ => {}
+        }
+        Ok(())
+    }
+
+    fn submit_password_input(&mut self) -> Result<()> {
+        let input = std::mem::take(&mut self.password_overlay.input);
+        let Some(mut flow) = self.password_flow.take() else {
+            self.clear_password_overlay();
+            return Ok(());
+        };
+
+        match flow.stage.clone() {
+            PasswordFlowStage::MasterCreate => {
+                flow.stage = PasswordFlowStage::MasterConfirm { first: input };
+                self.password_flow = Some(flow);
+                self.show_password_overlay_for_stage();
+            }
+            PasswordFlowStage::MasterConfirm { first } => {
+                if input != first {
+                    flow.stage = PasswordFlowStage::MasterCreate;
+                    self.password_flow = Some(flow);
+                    self.show_password_overlay_for_stage();
+                    self.set_password_overlay_error("Passwords don't match. Try again.");
+                    return Ok(());
+                }
+                if let Err(e) = self.credentials.setup_master_password(&input) {
+                    flow.stage = PasswordFlowStage::MasterCreate;
+                    self.password_flow = Some(flow);
+                    self.show_password_overlay_for_stage();
+                    self.set_password_overlay_error(format!(
+                        "Failed to setup master password: {}",
+                        e
+                    ));
+                    return Ok(());
+                }
+                self.status_message = Some("Master password created successfully".to_string());
+                return self.advance_after_master(flow);
+            }
+            PasswordFlowStage::MasterUnlock => match self.credentials.unlock(&input) {
+                Ok(true) => {
+                    self.status_message = Some("Unlocked".to_string());
+                    return self.advance_after_master(flow);
+                }
+                Ok(false) => {
+                    self.password_flow = Some(flow);
+                    self.set_password_overlay_error("Incorrect master password");
+                }
+                Err(e) => {
+                    self.password_flow = Some(flow);
+                    self.set_password_overlay_error(format!("Failed to unlock: {}", e));
+                }
+            },
+            PasswordFlowStage::HostPasswords { mut remaining } => {
+                if remaining.is_empty() {
+                    return self.finish_password_flow(flow);
+                }
+
+                let host = remaining.remove(0);
+                flow.passwords.insert(host.id, input);
+                if host.remember_password && !flow.hosts_to_save.contains(&host.id) {
+                    flow.hosts_to_save.push(host.id);
+                }
+
+                if remaining.is_empty() {
+                    return self.finish_password_flow(flow);
+                }
+
+                flow.stage = PasswordFlowStage::HostPasswords { remaining };
+                self.password_flow = Some(flow);
+                self.show_password_overlay_for_stage();
+            }
+            PasswordFlowStage::RetryPasswords {
+                mut remaining,
+                attempt,
+                host_name,
+            } => {
+                if remaining.is_empty() {
+                    return self.finish_password_flow(flow);
+                }
+
+                let host = remaining.remove(0);
+                flow.passwords.insert(host.id, input);
+                if host.remember_password && !flow.hosts_to_save.contains(&host.id) {
+                    flow.hosts_to_save.push(host.id);
+                }
+
+                if remaining.is_empty() {
+                    self.status_message =
+                        Some(format!("Retrying connection to {}...", flow.host.name));
+                    return self.finish_password_flow(flow);
+                }
+
+                flow.stage = PasswordFlowStage::RetryPasswords {
+                    remaining,
+                    attempt,
+                    host_name,
+                };
+                self.password_flow = Some(flow);
+                self.show_password_overlay_for_stage();
+            }
+        }
+
+        Ok(())
+    }
+
     /// Connect to a host and open a session
     /// Handles proxy chains (jump hosts) with recursive password prompts
     /// Integrates with credential manager for saved passwords
@@ -2390,6 +2769,8 @@ impl App {
         self.pending_connection_passwords.clear();
         self.pending_saved_password_hosts.clear();
         self.pending_password_attempts = 0;
+        self.password_flow = None;
+        self.clear_password_overlay();
 
         // Get terminal size
         // Account for: status bar (2 lines), tab bar (2 lines), terminal block borders (2 lines top+bottom, 2 cols left+right)
@@ -2404,217 +2785,60 @@ impl App {
             debug!(target: "app", "Proxy chain resolved: {:?}", chain_names);
         }
 
-        // Collect passwords for all hosts in the chain that need password auth
-        let mut passwords: std::collections::HashMap<uuid::Uuid, String> =
-            std::collections::HashMap::new();
-        let mut hosts_to_save: Vec<uuid::Uuid> = Vec::new();
-        let mut saved_password_hosts: Vec<uuid::Uuid> = Vec::new();
-
         // Check if any host in the chain needs password auth
-        let hosts_needing_password: Vec<_> = proxy_chain
+        let hosts_needing_password: Vec<HostConfig> = proxy_chain
             .iter()
             .filter(|h| matches!(h.auth, crate::config::AuthMethod::Password))
+            .cloned()
             .collect();
 
-        if !hosts_needing_password.is_empty() {
-            // Check if any host wants to remember password (for saving) or has saved password (for retrieval)
-            let any_wants_remember = hosts_needing_password.iter().any(|h| h.remember_password);
-            let has_any_saved = hosts_needing_password
-                .iter()
-                .any(|h| h.remember_password && self.credentials.has_saved_password(h.id));
-
-            // Need to setup/unlock master password if:
-            // - Any host wants to remember password (for future saving), OR
-            // - Any host has a saved password (for retrieval)
-            if (any_wants_remember || has_any_saved) && !self.credentials.is_unlocked() {
-                // Need to unlock master password first
-                if !self.credentials.has_master_password() {
-                    // First time setup - prompt to create master password
-                    self.events.pause();
-                    tokio::time::sleep(Duration::from_millis(50)).await;
-                    self.tui.exit()?;
-
-                    println!("\n🔐 First time setup: Create a master password to secure your saved credentials.");
-                    println!("   This password encrypts all saved connection passwords.\n");
-
-                    print!("Create master password: ");
-                    let _ = std::io::stdout().flush();
-                    let master_pwd = match rpassword::read_password() {
-                        Ok(p) => p,
-                        Err(e) => {
-                            std::thread::sleep(std::time::Duration::from_millis(100));
-                            self.tui.enter()?;
-                            self.events.resume();
-                            self.tui.clear()?;
-                            self.status_message = Some(format!("Failed to read password: {}", e));
-                            return Ok(());
-                        }
-                    };
-
-                    print!("Confirm master password: ");
-                    let _ = std::io::stdout().flush();
-                    let confirm_pwd = match rpassword::read_password() {
-                        Ok(p) => p,
-                        Err(e) => {
-                            std::thread::sleep(std::time::Duration::from_millis(100));
-                            self.tui.enter()?;
-                            self.events.resume();
-                            self.tui.clear()?;
-                            self.status_message = Some(format!("Failed to read password: {}", e));
-                            return Ok(());
-                        }
-                    };
-
-                    if master_pwd != confirm_pwd {
-                        std::thread::sleep(std::time::Duration::from_millis(100));
-                        self.tui.enter()?;
-                        self.events.resume();
-                        self.tui.clear()?;
-                        self.status_message = Some("Passwords don't match. Try again.".to_string());
-                        return Ok(());
-                    }
-
-                    if let Err(e) = self.credentials.setup_master_password(&master_pwd) {
-                        std::thread::sleep(std::time::Duration::from_millis(100));
-                        self.tui.enter()?;
-                        self.events.resume();
-                        self.tui.clear()?;
-                        self.status_message =
-                            Some(format!("Failed to setup master password: {}", e));
-                        return Ok(());
-                    }
-
-                    println!("\n✅ Master password created successfully!\n");
-                    std::thread::sleep(std::time::Duration::from_millis(500));
-                    self.tui.enter()?;
-                    self.events.resume();
-                    self.tui.clear()?;
-                } else {
-                    // Prompt for existing master password
-                    self.events.pause();
-                    tokio::time::sleep(Duration::from_millis(50)).await;
-                    self.tui.exit()?;
-
-                    print!("\n🔐 Master password: ");
-                    let _ = std::io::stdout().flush();
-                    let master_pwd = match rpassword::read_password() {
-                        Ok(p) => p,
-                        Err(e) => {
-                            std::thread::sleep(std::time::Duration::from_millis(100));
-                            self.tui.enter()?;
-                            self.events.resume();
-                            self.tui.clear()?;
-                            self.status_message = Some(format!("Failed to read password: {}", e));
-                            return Ok(());
-                        }
-                    };
-
-                    match self.credentials.unlock(&master_pwd) {
-                        Ok(true) => {
-                            println!("✅ Unlocked\n");
-                            std::thread::sleep(std::time::Duration::from_millis(200));
-                        }
-                        Ok(false) => {
-                            std::thread::sleep(std::time::Duration::from_millis(100));
-                            self.tui.enter()?;
-                            self.events.resume();
-                            self.tui.clear()?;
-                            self.status_message = Some("Incorrect master password".to_string());
-                            return Ok(());
-                        }
-                        Err(e) => {
-                            std::thread::sleep(std::time::Duration::from_millis(100));
-                            self.tui.enter()?;
-                            self.events.resume();
-                            self.tui.clear()?;
-                            self.status_message = Some(format!("Failed to unlock: {}", e));
-                            return Ok(());
-                        }
-                    }
-
-                    self.tui.enter()?;
-                    self.events.resume();
-                    self.tui.clear()?;
-                }
-            }
-
-            // Now collect passwords - try saved passwords first
-            let mut need_prompt = false;
-            for host_config in &hosts_needing_password {
-                // Try saved password first if remember_password is enabled
-                if host_config.remember_password && self.credentials.is_unlocked() {
-                    if let Ok(Some(saved_pwd)) = self.credentials.get_password(host_config.id) {
-                        passwords.insert(host_config.id, saved_pwd);
-                        saved_password_hosts.push(host_config.id);
-                        continue;
-                    }
-                }
-                need_prompt = true;
-            }
-
-            if need_prompt {
-                // Exit TUI mode to prompt for passwords
-                self.events.pause();
-                tokio::time::sleep(Duration::from_millis(50)).await;
-                self.tui.exit()?;
-
-                println!(); // Newline for cleaner output
-
-                for host_config in &hosts_needing_password {
-                    // Skip if we already have a saved password
-                    if passwords.contains_key(&host_config.id) {
-                        continue;
-                    }
-
-                    // Show context for proxy chain
-                    let context = if host_config.id == host.id {
-                        "target".to_string()
-                    } else {
-                        "jump host".to_string()
-                    };
-
-                    print!(
-                        "Password for {}@{} ({}): ",
-                        host_config.username, host_config.hostname, context
-                    );
-                    let _ = std::io::stdout().flush();
-
-                    match rpassword::read_password() {
-                        Ok(pwd) => {
-                            passwords.insert(host_config.id, pwd);
-                            // Mark for potential save if remember_password is enabled
-                            if host_config.remember_password {
-                                hosts_to_save.push(host_config.id);
-                            }
-                        }
-                        Err(e) => {
-                            // Re-enter TUI mode before returning error
-                            std::thread::sleep(std::time::Duration::from_millis(100));
-                            self.tui.enter()?;
-                            self.events.resume();
-                            self.tui.clear()?;
-                            self.status_message = Some(format!("Failed to read password: {}", e));
-                            return Ok(());
-                        }
-                    }
-                }
-
-                // Re-enter TUI mode
-                std::thread::sleep(std::time::Duration::from_millis(100));
-                self.tui.enter()?;
-                self.events.resume();
-                self.tui.clear()?;
-            }
+        if hosts_needing_password.is_empty() {
+            self.start_connection_attempt(
+                &host,
+                proxy_chain,
+                std::collections::HashMap::new(),
+                Vec::new(),
+                Vec::new(),
+            )?;
+            return Ok(());
         }
 
-        self.start_connection_attempt(
-            &host,
-            proxy_chain,
-            passwords,
-            hosts_to_save,
-            saved_password_hosts,
-        )?;
+        let any_wants_remember = hosts_needing_password.iter().any(|h| h.remember_password);
+        let has_any_saved = hosts_needing_password
+            .iter()
+            .any(|h| h.remember_password && self.credentials.has_saved_password(h.id));
 
+        let mut flow = PasswordFlow {
+            host: host.clone(),
+            proxy_chain: proxy_chain.clone(),
+            hosts_needing_password,
+            passwords: HashMap::new(),
+            hosts_to_save: Vec::new(),
+            saved_password_hosts: Vec::new(),
+            stage: PasswordFlowStage::MasterUnlock,
+        };
+
+        if (any_wants_remember || has_any_saved) && !self.credentials.is_unlocked() {
+            flow.stage = if !self.credentials.has_master_password() {
+                PasswordFlowStage::MasterCreate
+            } else {
+                PasswordFlowStage::MasterUnlock
+            };
+            self.password_flow = Some(flow);
+            self.show_password_overlay_for_stage();
+            return Ok(());
+        }
+
+        self.populate_saved_passwords(&mut flow);
+        let remaining = self.hosts_missing_passwords(&flow);
+        if remaining.is_empty() {
+            self.finish_password_flow(flow)?;
+            return Ok(());
+        }
+
+        flow.stage = PasswordFlowStage::HostPasswords { remaining };
+        self.password_flow = Some(flow);
+        self.show_password_overlay_for_stage();
         Ok(())
     }
 
@@ -2751,8 +2975,8 @@ impl App {
         };
 
         let proxy_chain = self.config.resolve_proxy_chain(&host);
-        let mut passwords = self.pending_connection_passwords.clone();
-        let mut updated_hosts_to_save = hosts_to_save;
+        let passwords = self.pending_connection_passwords.clone();
+        let updated_hosts_to_save = hosts_to_save;
         let hosts_to_prompt: Vec<_> = proxy_chain
             .iter()
             .filter(|h| {
@@ -2761,6 +2985,7 @@ impl App {
                     .any(|id| *id == h.id)
             })
             .filter(|h| matches!(h.auth, crate::config::AuthMethod::Password))
+            .cloned()
             .collect();
 
         if hosts_to_prompt.is_empty() {
@@ -2772,67 +2997,21 @@ impl App {
             return Ok(false);
         }
 
-        // Exit TUI mode to prompt for new passwords
-        self.events.pause();
-        tokio::time::sleep(Duration::from_millis(50)).await;
-        self.tui.exit()?;
-
-        println!();
-        println!(
-            "🔐 Saved password failed for {}. Please enter a new password (attempt {}/{}).",
-            host_name, self.pending_password_attempts, MAX_PASSWORD_ATTEMPTS
-        );
-
-        for host_config in hosts_to_prompt {
-            let context = if host_config.id == host_id {
-                "target".to_string()
-            } else {
-                "jump host".to_string()
-            };
-
-            print!(
-                "Password for {}@{} ({}): ",
-                host_config.username, host_config.hostname, context
-            );
-            let _ = std::io::stdout().flush();
-
-            match rpassword::read_password() {
-                Ok(pwd) => {
-                    passwords.insert(host_config.id, pwd);
-                    if host_config.remember_password
-                        && !updated_hosts_to_save.contains(&host_config.id)
-                    {
-                        updated_hosts_to_save.push(host_config.id);
-                    }
-                }
-                Err(e) => {
-                    std::thread::sleep(std::time::Duration::from_millis(100));
-                    self.tui.enter()?;
-                    self.events.resume();
-                    self.tui.clear()?;
-                    self.status_message = Some(format!("Failed to read password: {}", e));
-                    return Ok(true);
-                }
-            }
-        }
-
-        std::thread::sleep(std::time::Duration::from_millis(100));
-        self.tui.enter()?;
-        self.events.resume();
-        self.tui.clear()?;
-
-        self.status_message = Some(format!(
-            "Retrying connection to {}...",
-            host.name
-        ));
-
-        self.start_connection_attempt(
-            &host,
+        // Start overlay-based retry flow
+        self.password_flow = Some(PasswordFlow {
+            host,
             proxy_chain,
+            hosts_needing_password: hosts_to_prompt.clone(),
             passwords,
-            updated_hosts_to_save,
-            self.pending_saved_password_hosts.clone(),
-        )?;
+            hosts_to_save: updated_hosts_to_save,
+            saved_password_hosts: self.pending_saved_password_hosts.clone(),
+            stage: PasswordFlowStage::RetryPasswords {
+                remaining: hosts_to_prompt,
+                attempt: self.pending_password_attempts,
+                host_name: host_name.to_string(),
+            },
+        });
+        self.show_password_overlay_for_stage();
 
         Ok(true)
     }
