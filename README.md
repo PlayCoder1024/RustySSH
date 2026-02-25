@@ -6,7 +6,7 @@
 ![License](https://img.shields.io/badge/license-Apache%202.0-blue.svg)
 ![Platform](https://img.shields.io/badge/platform-macOS%20%7C%20Linux-lightgrey.svg)
 
-RustySSH is a terminal-based SSH connection manager with a beautiful, btop-inspired interface. Manage your SSH connections, tunnels, and keys all from one elegant TUI application.
+RustySSH is a terminal-based SSH connection manager with a beautiful interface. Manage your SSH connections, tunnels, and keys all from one elegant TUI application.
 
 > [!IMPORTANT]
 > This project is **totally vibecoding**. Every line of code is driven by LLM.
@@ -39,16 +39,6 @@ RustySSH is a terminal-based SSH connection manager with a beautiful, btop-inspi
 - libssh2 (for SSH functionality)
 - A terminal with Unicode support
 
-**macOS:**
-```bash
-brew install libssh2
-```
-
-**Ubuntu/Debian:**
-```bash
-sudo apt install libssh2-1-dev
-```
-
 ### From Source
 
 ```bash
@@ -67,11 +57,12 @@ cargo build --release
 
 2. **Add your first host:**
    - Press `n` to create a new host
-   - Press `e` to edit the config in your `$EDITOR`
+   - Press `e` to edit the config or `E` to edit in your `$EDITOR`
 
 3. **Connect:**
-   - Use `j`/`k` or `↑`/`↓` to navigate
+   - Use `j`/`k` or `↑`/`↓` to navigate the hosts
    - Press `Enter` to connect
+   - Input your master password and host connection password when you are prompted
 
 ## ⌨️ Keyboard Shortcuts
 
@@ -83,10 +74,9 @@ cargo build --release
 | `d` | Delete selected host |
 | `j`/`k` or `↑`/`↓` | Navigate |
 | `Tab` | Switch sessions |
-| `Shift+Esc` | Return to connections |
-| `f` | SFTP view |
+| `alt + f` | SFTP view |
 | `?` | Help |
-| `q` | Quit |
+| `ctrl + q` | Quit |
 
 ## ⚙️ Configuration
 
@@ -206,5 +196,5 @@ This project is licensed under the Apache License 2.0 - see the [LICENSE](LICENS
 
 ## 🙏 Acknowledgments
 
-- Inspired by [btop](https://github.com/aristocratos/btop) for the beautiful TUI aesthetics
-- [Tokyo Night](https://github.com/enkia/tokyo-night-vscode-theme) color scheme
+- [Ratatui](https://ratatui.rs/) for awesome TUI 
+- [libssh2](https://github.com/libssh2/libssh2.git) for ssh protocol
