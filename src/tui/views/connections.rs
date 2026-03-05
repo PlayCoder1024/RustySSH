@@ -664,7 +664,7 @@ fn render_host_edit_overlay(frame: &mut Frame, state: &RenderState, area: Rect) 
         Line::from(vec![
             Span::styled("Enter", theme.key_hint()),
             Span::styled(":Edit/Toggle  ", theme.text_dim()),
-            Span::styled("↑↓", theme.key_hint()),
+            Span::styled("↑↓/Tab", theme.key_hint()),
             Span::styled(":Navigate  ", theme.text_dim()),
             Span::styled("Esc", theme.key_hint()),
             Span::styled(format!(":{}", close_label), theme.text_dim()),

@@ -1733,9 +1733,24 @@ impl App {
             return Ok(());
         }
 
+        let max_index = 7;
         match key.code {
             KeyCode::Esc => {
                 self.close_host_edit().await?;
+            }
+            KeyCode::Tab => {
+                if self.detail_view_item_index >= max_index {
+                    self.detail_view_item_index = 0;
+                } else {
+                    self.detail_view_item_index += 1;
+                }
+            }
+            KeyCode::BackTab => {
+                if self.detail_view_item_index == 0 {
+                    self.detail_view_item_index = max_index;
+                } else {
+                    self.detail_view_item_index -= 1;
+                }
             }
             KeyCode::Up | KeyCode::Char('k') => {
                 if self.detail_view_item_index > 0 {
@@ -1743,7 +1758,7 @@ impl App {
                 }
             }
             KeyCode::Down | KeyCode::Char('j') => {
-                if self.detail_view_item_index < 7 {
+                if self.detail_view_item_index < max_index {
                     self.detail_view_item_index += 1;
                 }
             }
