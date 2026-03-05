@@ -610,10 +610,10 @@ fn render_host_edit_overlay(frame: &mut Frame, state: &RenderState, area: Rect) 
                 theme.bg_panel()
             };
 
-            let display_value = if is_editing {
-                format!("{}|", state.temp_edit_buffer)
+            let value_text = if is_editing {
+                state.temp_edit_buffer.as_str()
             } else {
-                value.to_string()
+                value.as_str()
             };
 
             let label_style = if is_selected {
@@ -630,11 +630,20 @@ fn render_host_edit_overlay(frame: &mut Frame, state: &RenderState, area: Rect) 
                 theme.text().bg(row_bg)
             };
 
-            lines.push(Line::from(vec![
-                Span::styled(format!("{:12}", label), label_style),
-                Span::styled(" │ ", theme.text_dim().bg(row_bg)),
-                Span::styled(display_value, value_style),
-            ]));
+            let cursor_style = Style::default()
+                .fg(row_bg)
+                .bg(theme.fg_bright())
+                .add_modifier(Modifier::SLOW_BLINK);
+            let mut line_spans = Vec::new();
+            line_spans.push(Span::styled(format!("{:12}", label), label_style));
+            line_spans.push(Span::styled(" │ ", theme.text_dim().bg(row_bg)));
+            line_spans.extend(build_value_spans(
+                value_text,
+                is_editing,
+                value_style,
+                cursor_style,
+            ));
+            lines.push(Line::from(line_spans));
         }
 
         let paragraph = Paragraph::new(lines);
@@ -803,10 +812,10 @@ fn render_proxy_edit_overlay(frame: &mut Frame, state: &RenderState, area: Rect)
                 theme.bg_panel()
             };
 
-            let display_value = if is_active_edit {
-                format!("{}|", state.proxy_temp_buffer)
+            let value_text = if is_active_edit {
+                state.proxy_temp_buffer.as_str()
             } else {
-                value.clone()
+                value.as_str()
             };
 
             let label_style = if is_selected {
@@ -824,11 +833,20 @@ fn render_proxy_edit_overlay(frame: &mut Frame, state: &RenderState, area: Rect)
                 theme.text().bg(row_bg)
             };
 
-            lines.push(Line::from(vec![
-                Span::styled(format!("{:12}", label), label_style),
-                Span::styled(" │ ", theme.text_dim().bg(row_bg)),
-                Span::styled(display_value, value_style),
-            ]));
+            let cursor_style = Style::default()
+                .fg(row_bg)
+                .bg(theme.fg_bright())
+                .add_modifier(Modifier::SLOW_BLINK);
+            let mut line_spans = Vec::new();
+            line_spans.push(Span::styled(format!("{:12}", label), label_style));
+            line_spans.push(Span::styled(" │ ", theme.text_dim().bg(row_bg)));
+            line_spans.extend(build_value_spans(
+                value_text,
+                is_active_edit,
+                value_style,
+                cursor_style,
+            ));
+            lines.push(Line::from(line_spans));
         }
     } else {
         lines.push(Line::from(vec![Span::styled(
@@ -1343,14 +1361,22 @@ fn render_details_panel_state(frame: &mut Frame, state: &RenderState, area: Rect
             let is_selected = i == state.detail_view_item_index && is_focused;
             let is_editing = is_selected && state.editing_detail;
 
-            let display_value = if is_editing {
-                // Show cursor
-                format!("{}|", state.temp_edit_buffer)
+            let value_text = if is_editing {
+                state.temp_edit_buffer.as_str()
             } else {
-                value.to_string()
+                value.as_str()
             };
 
-            render_detail_field(frame, inner, y, label, &display_value, is_selected, theme);
+            render_detail_field(
+                frame,
+                inner,
+                y,
+                label,
+                value_text,
+                is_selected,
+                is_editing,
+                theme,
+            );
             y += 2;
         }
     } else {
@@ -1368,6 +1394,7 @@ fn render_detail_field(
     label: &str,
     value: &str,
     is_selected: bool,
+    is_editing: bool,
     theme: &crate::tui::Theme,
 ) {
     if y >= area.y + area.height {
@@ -1398,7 +1425,35 @@ fn render_detail_field(
         .split(row_area);
 
     frame.render_widget(Paragraph::new(label).style(label_style), layouts[0]);
-    frame.render_widget(Paragraph::new(value).style(value_style), layouts[1]);
+    let value_line = if is_editing {
+        let cursor_style = Style::default()
+            .fg(theme.bg_selected())
+            .bg(theme.fg_bright())
+            .add_modifier(Modifier::SLOW_BLINK);
+        Line::from(vec![
+            Span::styled(value.to_string(), value_style),
+            Span::styled(" ", cursor_style),
+        ])
+    } else {
+        Line::from(vec![Span::styled(value.to_string(), value_style)])
+    };
+    frame.render_widget(Paragraph::new(value_line), layouts[1]);
+}
+
+fn build_value_spans(
+    value: &str,
+    is_editing: bool,
+    value_style: Style,
+    cursor_style: Style,
+) -> Vec<Span<'static>> {
+    if is_editing {
+        vec![
+            Span::styled(value.to_string(), value_style),
+            Span::styled(" ", cursor_style),
+        ]
+    } else {
+        vec![Span::styled(value.to_string(), value_style)]
+    }
 }
 
 /// Render the connections view

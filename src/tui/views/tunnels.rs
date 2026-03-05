@@ -280,11 +280,7 @@ fn render_tunnel_edit_overlay(
             theme.bg_panel()
         };
 
-        let display_value = if is_active_edit {
-            format!("{}|", edit_buffer)
-        } else {
-            value.clone()
-        };
+        let value_text: &str = if is_active_edit { edit_buffer } else { value };
 
         let label_style = if is_selected {
             Style::default()
@@ -301,11 +297,20 @@ fn render_tunnel_edit_overlay(
             theme.text().bg(row_bg)
         };
 
-        lines.push(Line::from(vec![
-            Span::styled(format!("{:14}", label), label_style),
-            Span::styled(" │ ", theme.text_dim().bg(row_bg)),
-            Span::styled(display_value, value_style),
-        ]));
+        let cursor_style = Style::default()
+            .fg(row_bg)
+            .bg(theme.fg_bright())
+            .add_modifier(Modifier::SLOW_BLINK);
+        let mut line_spans = Vec::new();
+        line_spans.push(Span::styled(format!("{:14}", label), label_style));
+        line_spans.push(Span::styled(" │ ", theme.text_dim().bg(row_bg)));
+        if is_active_edit {
+            line_spans.push(Span::styled(value_text.to_string(), value_style));
+            line_spans.push(Span::styled(" ", cursor_style));
+        } else {
+            line_spans.push(Span::styled(value_text.to_string(), value_style));
+        }
+        lines.push(Line::from(line_spans));
     }
 
     let paragraph = Paragraph::new(lines);
