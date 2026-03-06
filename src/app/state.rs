@@ -1486,6 +1486,12 @@ impl App {
                             }
                         }
                     }
+                    View::Sftp => {
+                        // Scroll up in active SFTP pane
+                        if let Some(browser) = &mut self.file_browser {
+                            browser.active_pane_mut().page_up(3);
+                        }
+                    }
                     _ => {}
                 }
             }
@@ -1504,6 +1510,12 @@ impl App {
                             if let Some(session) = self.sessions.get_mut(session_id) {
                                 session.scroll_down(3);
                             }
+                        }
+                    }
+                    View::Sftp => {
+                        // Scroll down in active SFTP pane
+                        if let Some(browser) = &mut self.file_browser {
+                            browser.active_pane_mut().page_down(3);
                         }
                     }
                     _ => {}

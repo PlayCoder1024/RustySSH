@@ -2,7 +2,21 @@
 
 use crate::app::{App, FilePaneSnapshot, RenderState};
 use ratatui::prelude::*;
-use ratatui::widgets::{Block, Borders, Cell, Padding, Paragraph, Row, Table, TableState};
+use ratatui::widgets::{Block, Borders, Cell, Padding, Paragraph, Row, Table};
+
+fn visible_range(total_rows: usize, cursor: usize, viewport_rows: usize) -> (usize, usize) {
+    if total_rows == 0 || viewport_rows == 0 {
+        return (0, 0);
+    }
+
+    let clamped_cursor = cursor.min(total_rows - 1);
+    let half_view = viewport_rows / 2;
+    let mut start = clamped_cursor.saturating_sub(half_view);
+    let max_start = total_rows.saturating_sub(viewport_rows);
+    start = start.min(max_start);
+    let end = (start + viewport_rows).min(total_rows);
+    (start, end)
+}
 
 /// Render the SFTP view with RenderState
 pub fn render_state(frame: &mut Frame, state: &RenderState, area: Rect) {
@@ -87,17 +101,24 @@ fn render_pane_with_data(
     let inner = block.inner(area);
     frame.render_widget(block, area);
 
-    // Build table rows from entries
-    let rows: Vec<Row> = pane
-        .entries
+    let total_rows = pane.entries.len();
+    let cursor = if total_rows == 0 {
+        0
+    } else {
+        pane.cursor.min(total_rows - 1)
+    };
+    let visible_rows = inner.height as usize;
+    let (start, end) = visible_range(total_rows, cursor, visible_rows);
+
+    // Build table rows from the visible window only.
+    let rows: Vec<Row> = pane.entries[start..end]
         .iter()
         .enumerate()
-        .map(|(idx, entry)| {
+        .map(|(offset, entry)| {
+            let idx = start + offset;
             let icon = if entry.is_dir { "📁 " } else { "📄 " };
 
-            // Determine style based on selection and cursor
-            let is_cursor = idx == pane.cursor;
-            let style = if is_cursor && is_active {
+            let style = if idx == cursor && is_active {
                 theme.selected()
             } else if entry.selected {
                 Style::default()
@@ -116,19 +137,6 @@ fn render_pane_with_data(
 
     let widths = [Constraint::Min(20), Constraint::Length(10)];
     let table = Table::new(rows, widths);
-
-    // Calculate scroll offset to keep cursor visible
-    let visible_height = inner.height.saturating_sub(0) as usize;
-    let scroll_offset = if pane.cursor >= visible_height {
-        pane.cursor.saturating_sub(visible_height / 2)
-    } else {
-        0
-    };
-
-    // Create table state for scrolling
-    let mut table_state = TableState::default();
-    table_state.select(Some(pane.cursor.saturating_sub(scroll_offset)));
-
     frame.render_widget(table, inner);
 }
 
@@ -411,4 +419,32 @@ fn render_transfer_queue(frame: &mut Frame, app: &App, area: Rect) {
 
     let paragraph = Paragraph::new(content);
     frame.render_widget(paragraph, inner);
+}
+
+#[cfg(test)]
+mod tests {
+    use super::visible_range;
+
+    #[test]
+    fn visible_range_stays_at_top_when_cursor_near_start() {
+        assert_eq!(visible_range(50, 0, 10), (0, 10));
+        assert_eq!(visible_range(50, 3, 10), (0, 10));
+    }
+
+    #[test]
+    fn visible_range_follows_cursor_in_middle() {
+        assert_eq!(visible_range(100, 40, 10), (35, 45));
+    }
+
+    #[test]
+    fn visible_range_clamps_at_bottom() {
+        assert_eq!(visible_range(50, 49, 10), (40, 50));
+    }
+
+    #[test]
+    fn visible_range_handles_empty_or_tiny_inputs() {
+        assert_eq!(visible_range(0, 0, 10), (0, 0));
+        assert_eq!(visible_range(5, 2, 10), (0, 5));
+        assert_eq!(visible_range(5, 99, 0), (0, 0));
+    }
 }
