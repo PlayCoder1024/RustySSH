@@ -706,33 +706,42 @@ impl App {
     fn spawn_transfer(&mut self, item: crate::sftp::TransferItem) {
         let host_id = item.host_id;
 
-        // Retrieve host config and password BEFORE borrowing transfer_workers mutably
-        let host_config_opt = self
+        // Retrieve host config BEFORE borrowing transfer_workers mutably
+        let host_config = self
             .all_hosts()
             .iter()
             .find(|h| h.id == host_id)
             .map(|h| (*h).clone());
-        let effective_password = if host_config_opt.is_some() {
-            let password = self.credentials.get_password(host_id).ok().flatten();
-            let session_pwd = self.session_passwords.get(&host_id).cloned();
-            session_pwd.or(password)
-        } else {
-            None
-        };
 
         // Check if we have a worker for this host
         if let std::collections::hash_map::Entry::Vacant(e) = self.transfer_workers.entry(host_id) {
-            if let Some(host) = host_config_opt {
+            if let Some(host) = host_config {
+                let proxy_chain = self.config.resolve_proxy_chain(&host);
+                let mut passwords = std::collections::HashMap::new();
+
+                // Collect available passwords for the entire chain (target + jump hosts).
+                for chain_host in &proxy_chain {
+                    let session_pwd = self.session_passwords.get(&chain_host.id).cloned();
+                    let saved_pwd = self.credentials.get_password(chain_host.id).ok().flatten();
+                    if let Some(pwd) = session_pwd.or(saved_pwd) {
+                        passwords.insert(chain_host.id, pwd);
+                    }
+                }
+
                 // Need to spawn a new worker
                 let (tx, rx) = mpsc::unbounded_channel();
                 let progress_tx = self.transfer_queue.progress_sender();
-
-                let host_clone = host.clone();
-                let pwd = effective_password.clone();
+                let chain_clone = proxy_chain.clone();
+                let passwords_clone = passwords.clone();
 
                 // Spawn the worker thread
                 std::thread::spawn(move || {
-                    crate::sftp::transfer::run_transfer_worker(host_clone, pwd, rx, progress_tx);
+                    crate::sftp::transfer::run_transfer_worker(
+                        chain_clone,
+                        passwords_clone,
+                        rx,
+                        progress_tx,
+                    );
                 });
 
                 e.insert(tx);
@@ -1286,6 +1295,9 @@ impl App {
                     .is_some();
 
                 if completed {
+                    // Start next pending items if queue has capacity now.
+                    self.process_transfers();
+
                     // Trigger refresh of file browser if visible
                     if let Some(browser) = &mut self.file_browser {
                         // We assume upload/download based on something...

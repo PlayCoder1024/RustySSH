@@ -1,7 +1,7 @@
 //! SFTP file transfer operations
 
 use chrono::{DateTime, Utc};
-use std::collections::VecDeque;
+use std::collections::{HashMap, VecDeque};
 use std::path::PathBuf;
 use tokio::sync::mpsc;
 use tracing::{debug, info, warn};
@@ -336,26 +336,110 @@ impl Default for TransferQueue {
 
 /// Worker function to handle transfers
 /// Runs in a separate thread/task
+fn connect_via_proxy_chain(
+    proxy_chain: &[crate::config::HostConfig],
+    passwords: &HashMap<Uuid, String>,
+) -> anyhow::Result<crate::ssh::SshConnection> {
+    use crate::config::ProxyConfig;
+    use crate::ssh::ProxyConnection;
+
+    let mut prev_connection: Option<crate::ssh::SshConnection> = None;
+
+    for (i, chain_host) in proxy_chain.iter().enumerate() {
+        let is_last = i == proxy_chain.len() - 1;
+        let password = passwords.get(&chain_host.id).map(|s| s.as_str());
+
+        let proxy = if let Some(conn) = prev_connection.take() {
+            ProxyConnection::JumpHost {
+                connection: Box::new(conn),
+            }
+        } else if is_last {
+            match &chain_host.proxy {
+                Some(ProxyConfig::Socks5 {
+                    address,
+                    port,
+                    username,
+                    password: proxy_pwd,
+                }) => ProxyConnection::Socks5 {
+                    address: address.clone(),
+                    port: *port,
+                    auth: match (username, proxy_pwd) {
+                        (Some(u), Some(p)) => Some((u.clone(), p.clone())),
+                        _ => None,
+                    },
+                },
+                Some(ProxyConfig::Socks4 {
+                    address,
+                    port,
+                    user_id,
+                }) => ProxyConnection::Socks4 {
+                    address: address.clone(),
+                    port: *port,
+                    user_id: user_id.clone(),
+                },
+                Some(ProxyConfig::Http {
+                    address,
+                    port,
+                    username,
+                    password: proxy_pwd,
+                }) => ProxyConnection::HttpConnect {
+                    address: address.clone(),
+                    port: *port,
+                    auth: match (username, proxy_pwd) {
+                        (Some(u), Some(p)) => Some((u.clone(), p.clone())),
+                        _ => None,
+                    },
+                },
+                Some(ProxyConfig::ProxyCommand { command }) => ProxyConnection::ProxyCommand {
+                    command: command.clone(),
+                    target_host: chain_host.hostname.clone(),
+                    target_port: chain_host.port,
+                },
+                Some(ProxyConfig::JumpHost { .. }) | None => ProxyConnection::Direct,
+            }
+        } else {
+            ProxyConnection::Direct
+        };
+
+        let connection =
+            crate::ssh::SshConnection::connect_via_proxy(chain_host.clone(), proxy, password, None)?;
+
+        if is_last {
+            return Ok(connection);
+        }
+
+        prev_connection = Some(connection);
+    }
+
+    Err(anyhow::anyhow!("Empty proxy chain"))
+}
+
 pub fn run_transfer_worker(
-    host_config: crate::config::HostConfig,
-    password: Option<String>,
+    proxy_chain: Vec<crate::config::HostConfig>,
+    passwords: HashMap<Uuid, String>,
     mut command_rx: mpsc::UnboundedReceiver<TransferItem>,
     progress_tx: mpsc::UnboundedSender<TransferProgress>,
 ) {
-    info!(target: "sftp::transfer", "Transfer worker starting for {}@{}", host_config.username, host_config.hostname);
+    let Some(target_host) = proxy_chain.last() else {
+        while let Some(item) = command_rx.blocking_recv() {
+            let _ = progress_tx.send(TransferProgress {
+                id: item.id,
+                transferred_bytes: 0,
+                speed: 0.0,
+                error: Some("Transfer worker setup failed: empty proxy chain".to_string()),
+            });
+        }
+        return;
+    };
+    info!(target: "sftp::transfer", "Transfer worker starting for {}@{}", target_host.username, target_host.hostname);
 
     // Connect
     debug!(target: "sftp::transfer", "Establishing SSH connection for transfers");
-    let connection_result = crate::ssh::SshConnection::connect_via_proxy(
-        host_config.clone(),
-        crate::ssh::ProxyConnection::Direct,
-        password.as_deref(),
-        None,
-    );
+    let connection_result = connect_via_proxy_chain(&proxy_chain, &passwords);
 
     let connection = match connection_result {
         Ok(conn) => {
-            info!(target: "sftp::transfer", "Transfer worker connected to {}@{}", host_config.username, host_config.hostname);
+            info!(target: "sftp::transfer", "Transfer worker connected to {}@{}", target_host.username, target_host.hostname);
             conn
         }
         Err(e) => {
