@@ -22,9 +22,13 @@ const MAX_PASSWORD_ATTEMPTS: u8 = 3;
 #[derive(Debug, Clone)]
 enum PasswordFlowStage {
     MasterCreate,
-    MasterConfirm { first: String },
+    MasterConfirm {
+        first: String,
+    },
     MasterUnlock,
-    HostPasswords { remaining: Vec<HostConfig> },
+    HostPasswords {
+        remaining: Vec<HostConfig>,
+    },
     RetryPasswords {
         remaining: Vec<HostConfig>,
         attempt: u8,
@@ -406,6 +410,8 @@ pub struct App {
     pending_connection_passwords: HashMap<Uuid, String>,
     /// Host ID currently being connected
     pending_connection_host_id: Option<Uuid>,
+    /// Session being reconnected (if reconnect was triggered from a disconnected tab)
+    reconnect_target_session: Option<Uuid>,
     /// Hosts to save passwords for after successful connection
     pending_hosts_to_save: Vec<Uuid>,
     /// Hosts whose passwords were sourced from saved credentials
@@ -581,6 +587,7 @@ impl App {
             pending_connection: None,
             pending_connection_passwords: HashMap::new(),
             pending_connection_host_id: None,
+            reconnect_target_session: None,
             pending_hosts_to_save: Vec::new(),
             pending_saved_password_hosts: Vec::new(),
             pending_password_attempts: 0,
@@ -655,6 +662,130 @@ impl App {
     /// Get selected host
     fn selected_host(&self) -> Option<&HostConfig> {
         self.all_hosts().get(self.selected_host_index).copied()
+    }
+
+    fn is_session_disconnected(&self, session_id: Uuid) -> bool {
+        self.sessions
+            .get(session_id)
+            .map(|s| s.status == crate::ssh::SessionStatus::Disconnected)
+            .unwrap_or(false)
+    }
+
+    fn mark_session_disconnected(&mut self, session_id: Uuid, reason: impl Into<String>) {
+        let reason = reason.into();
+        let host_id = self.sessions.get(session_id).map(|s| s.host_id);
+
+        if let Some(channel) = self.channels.remove(&session_id) {
+            self.connections.remove(channel.connection_id);
+        }
+
+        if let Some(session) = self.sessions.get_mut(session_id) {
+            session.status = crate::ssh::SessionStatus::Disconnected;
+            session.progress = None;
+        }
+
+        if let Some(host_id) = host_id {
+            self.session_passwords.remove(&host_id);
+            let host_has_live_session = self.sessions.list().iter().any(|s| {
+                s.host_id == host_id && s.status != crate::ssh::SessionStatus::Disconnected
+            });
+            if !host_has_live_session {
+                self.stop_autostart_tunnels(host_id);
+            }
+        }
+
+        if self.reconnect_target_session == Some(session_id) {
+            self.reconnect_target_session = None;
+        }
+
+        self.status_message = Some(format!("Disconnected: {}", reason));
+    }
+
+    fn remove_session_after_disconnect(&mut self, session_id: Uuid, reason: impl Into<String>) {
+        let reason = reason.into();
+        let host_id = self.sessions.get(session_id).map(|s| s.host_id);
+
+        if let Some(channel) = self.channels.remove(&session_id) {
+            self.connections.remove(channel.connection_id);
+        }
+
+        self.sessions.remove(session_id);
+        self.session_order.retain(|&id| id != session_id);
+
+        if let Some(host_id) = host_id {
+            self.session_passwords.remove(&host_id);
+            let host_has_live_session = self.sessions.list().iter().any(|s| {
+                s.host_id == host_id && s.status != crate::ssh::SessionStatus::Disconnected
+            });
+            if !host_has_live_session {
+                self.stop_autostart_tunnels(host_id);
+            }
+        }
+
+        if self.reconnect_target_session == Some(session_id) {
+            self.reconnect_target_session = None;
+        }
+
+        if self.active_session == Some(session_id) {
+            self.active_session = self.session_order.first().copied();
+            if self.active_session.is_none() {
+                self.view = View::Connections;
+            }
+        }
+
+        self.status_message = Some(reason);
+    }
+
+    fn queue_session_input(&mut self, session_id: Uuid, data: Vec<u8>) -> bool {
+        if data.is_empty() {
+            return true;
+        }
+
+        if let Some(channel) = self.channels.get(&session_id) {
+            if channel.input_tx.send(data).is_ok() {
+                return true;
+            }
+        }
+
+        self.mark_session_disconnected(session_id, "Channel unavailable");
+        false
+    }
+
+    async fn reconnect_disconnected_session(&mut self, session_id: Uuid) -> Result<()> {
+        if self.connecting_to_host.is_some() {
+            return Ok(());
+        }
+
+        let Some(session) = self.sessions.get(session_id) else {
+            return Ok(());
+        };
+
+        if session.status != crate::ssh::SessionStatus::Disconnected {
+            return Ok(());
+        }
+
+        let host_id = session.host_id;
+        let tab_name = session.name.clone();
+        let host = self
+            .all_hosts()
+            .into_iter()
+            .find(|h| h.id == host_id)
+            .cloned();
+
+        if let Some(host) = host {
+            if let Some(session) = self.sessions.get_mut(session_id) {
+                session.status = crate::ssh::SessionStatus::Connecting;
+            }
+            self.status_message = Some(format!("Reconnecting to {}...", host.name));
+            self.connect_to_host(host, Some(session_id)).await?;
+        } else {
+            self.status_message = Some(format!(
+                "Reconnect failed: host for session '{}' is missing from config",
+                tab_name
+            ));
+        }
+
+        Ok(())
     }
 
     /// Navigate to a new view (clears forward history)
@@ -1094,6 +1225,23 @@ impl App {
                     return Ok(true);
                 }
 
+                // In disconnected session state, any key attempts reconnection.
+                if self.view == View::Session {
+                    if let Some(session_id) = self.active_session {
+                        if self.is_session_disconnected(session_id) {
+                            if key.modifiers.contains(KeyModifiers::CONTROL)
+                                && matches!(key.code, KeyCode::Char('q') | KeyCode::Char('Q'))
+                            {
+                                self.state = AppState::Quit;
+                                return Ok(true);
+                            }
+
+                            self.reconnect_disconnected_session(session_id).await?;
+                            return Ok(true);
+                        }
+                    }
+                }
+
                 // Handle Ctrl+C/Q - only quit from non-session views
                 // In session view, forward Ctrl+C to remote server
                 // Handle Global Navigation: Alt+Left (Back), Alt+Right (Forward)
@@ -1119,9 +1267,7 @@ impl App {
                                 // Forward Ctrl+C (0x03) to remote
                                 // Note: If selection was active, it was handled above as Copy
                                 if let Some(session_id) = self.active_session {
-                                    if let Some(channel) = self.channels.get(&session_id) {
-                                        let _ = channel.input_tx.send(vec![0x03]);
-                                    }
+                                    self.queue_session_input(session_id, vec![0x03]);
                                 }
                             } else {
                                 self.state = AppState::Quit;
@@ -1139,12 +1285,8 @@ impl App {
                             // Forward other Ctrl+key combos to session
                             if self.view == View::Session {
                                 if let Some(session_id) = self.active_session {
-                                    if let Some(channel) = self.channels.get(&session_id) {
-                                        let data = self.key_to_bytes(&key);
-                                        if !data.is_empty() {
-                                            let _ = channel.input_tx.send(data);
-                                        }
-                                    }
+                                    let data = self.key_to_bytes(&key);
+                                    self.queue_session_input(session_id, data);
                                 }
                             }
                         }
@@ -1167,37 +1309,19 @@ impl App {
                 Ok(true)
             }
             AppEvent::SshData { session_id, data } => {
+                if let Some(session) = self.sessions.get_mut(session_id) {
+                    if session.status != crate::ssh::SessionStatus::Connected {
+                        session.status = crate::ssh::SessionStatus::Connected;
+                    }
+                }
                 self.sessions.process_data(session_id, &data).await?;
                 Ok(true)
             }
             AppEvent::SshDisconnected { session_id, reason } => {
-                self.status_message = Some(format!("Disconnected: {}", reason));
-                let host_id = self.sessions.get(session_id).map(|s| s.host_id);
-                self.channels.remove(&session_id);
-                self.sessions.remove(session_id);
-                // Remove from session order
-                self.session_order.retain(|&id| id != session_id);
-
-                if let Some(host_id) = host_id {
-                    let still_active = self
-                        .sessions
-                        .list()
-                        .iter()
-                        .any(|s| s.host_id == host_id);
-                    if !still_active {
-                        self.stop_autostart_tunnels(host_id);
-                    }
-                }
-
-                if self.active_session == Some(session_id) {
-                    // Switch to another session if available
-                    if let Some(&next_session) = self.session_order.first() {
-                        self.active_session = Some(next_session);
-                    } else {
-                        // No remaining sessions, go back to connections
-                        self.view = View::Connections;
-                        self.active_session = None;
-                    }
+                if reason.starts_with("Session exited") {
+                    self.remove_session_after_disconnect(session_id, reason);
+                } else {
+                    self.mark_session_disconnected(session_id, reason);
                 }
                 Ok(true)
             }
@@ -1263,10 +1387,18 @@ impl App {
                                     &e.to_string(),
                                     hosts_to_save,
                                 )
-                                    .await;
+                                .await;
                             }
                             Err(e) => {
                                 // Task panicked or cancelled
+                                if let Some(target_session_id) =
+                                    self.reconnect_target_session.take()
+                                {
+                                    if let Some(session) = self.sessions.get_mut(target_session_id)
+                                    {
+                                        session.status = crate::ssh::SessionStatus::Disconnected;
+                                    }
+                                }
                                 self.status_message = Some(format!("Connection cancelled: {}", e));
                             }
                         }
@@ -1624,7 +1756,7 @@ impl App {
             KeyCode::Enter => {
                 // Connect to selected host
                 if let Some(host) = self.selected_host().cloned() {
-                    self.connect_to_host(host).await?;
+                    self.connect_to_host(host, None).await?;
                 }
             }
             KeyCode::Char('n') => {
@@ -1673,6 +1805,11 @@ impl App {
                     self.pending_hosts_to_save.clear();
                     self.pending_saved_password_hosts.clear();
                     self.pending_password_attempts = 0;
+                    if let Some(target_session_id) = self.reconnect_target_session.take() {
+                        if let Some(session) = self.sessions.get_mut(target_session_id) {
+                            session.status = crate::ssh::SessionStatus::Disconnected;
+                        }
+                    }
                     self.status_message = Some("Connection cancelled".to_string());
                 }
             }
@@ -1874,8 +2011,7 @@ impl App {
                     if self.proxy_edit_field_index >= new_max {
                         self.proxy_edit_field_index = new_max.saturating_sub(1);
                     }
-                } else if let Some(field) =
-                    self.proxy_field_kind(kind, self.proxy_edit_field_index)
+                } else if let Some(field) = self.proxy_field_kind(kind, self.proxy_edit_field_index)
                 {
                     self.proxy_temp_buffer = self.proxy_field_value(kind, field);
                     self.proxy_editing = true;
@@ -1909,11 +2045,7 @@ impl App {
             KeyCode::Char(' ') => {
                 if let Some(tunnel) = self.config.tunnels.get(self.tunnel_picker_index) {
                     let name = tunnel.name().to_string();
-                    if let Some(pos) = self
-                        .tunnel_picker_selected
-                        .iter()
-                        .position(|t| t == &name)
-                    {
+                    if let Some(pos) = self.tunnel_picker_selected.iter().position(|t| t == &name) {
                         self.tunnel_picker_selected.remove(pos);
                     } else {
                         self.tunnel_picker_selected.push(name);
@@ -1928,9 +2060,7 @@ impl App {
                         .iter()
                         .any(|t| t == tunnel.name())
                     {
-                        selected.push(crate::config::TunnelRef::Name(
-                            tunnel.name().to_string(),
-                        ));
+                        selected.push(crate::config::TunnelRef::Name(tunnel.name().to_string()));
                     }
                 }
 
@@ -2051,9 +2181,7 @@ impl App {
                 .current_edit_host()
                 .and_then(|h| h.proxy.as_ref())
                 .and_then(|p| match p {
-                    crate::config::ProxyConfig::Socks5 { username, .. } => {
-                        username.clone()
-                    }
+                    crate::config::ProxyConfig::Socks5 { username, .. } => username.clone(),
                     crate::config::ProxyConfig::Http { username, .. } => username.clone(),
                     _ => None,
                 })
@@ -2062,9 +2190,7 @@ impl App {
                 .current_edit_host()
                 .and_then(|h| h.proxy.as_ref())
                 .and_then(|p| match p {
-                    crate::config::ProxyConfig::Socks5 { password, .. } => {
-                        password.clone()
-                    }
+                    crate::config::ProxyConfig::Socks5 { password, .. } => password.clone(),
                     crate::config::ProxyConfig::Http { password, .. } => password.clone(),
                     _ => None,
                 })
@@ -2081,9 +2207,7 @@ impl App {
                 .current_edit_host()
                 .and_then(|h| h.proxy.as_ref())
                 .and_then(|p| match p {
-                    crate::config::ProxyConfig::ProxyCommand { command } => {
-                        Some(command.clone())
-                    }
+                    crate::config::ProxyConfig::ProxyCommand { command } => Some(command.clone()),
                     _ => None,
                 })
                 .unwrap_or_default(),
@@ -2228,7 +2352,8 @@ impl App {
                 }
                 ProxyKind::ProxyCommand => {
                     if let ProxyFieldKind::Command = field {
-                        host.proxy = Some(crate::config::ProxyConfig::ProxyCommand { command: value });
+                        host.proxy =
+                            Some(crate::config::ProxyConfig::ProxyCommand { command: value });
                     }
                 }
                 ProxyKind::None => {}
@@ -2437,9 +2562,10 @@ impl App {
 
     async fn close_host_edit(&mut self) -> Result<()> {
         if self.host_edit_is_new {
-            if let (Some(draft), Some(default_host)) =
-                (self.host_edit_draft.as_ref(), self.host_edit_default.as_ref())
-            {
+            if let (Some(draft), Some(default_host)) = (
+                self.host_edit_draft.as_ref(),
+                self.host_edit_default.as_ref(),
+            ) {
                 if !self.host_is_default(draft, default_host) {
                     let new_host = draft.clone();
                     self.config.hosts.push(new_host.clone());
@@ -2673,13 +2799,15 @@ impl App {
         self.pending_connection_host_id = None;
         self.connecting_to_host = None;
         self.connection_start_time = None;
+        if let Some(target_session_id) = self.reconnect_target_session.take() {
+            if let Some(session) = self.sessions.get_mut(target_session_id) {
+                session.status = crate::ssh::SessionStatus::Disconnected;
+            }
+        }
         self.status_message = Some(message.to_string());
     }
 
-    async fn handle_password_overlay_key(
-        &mut self,
-        key: crossterm::event::KeyEvent,
-    ) -> Result<()> {
+    async fn handle_password_overlay_key(&mut self, key: crossterm::event::KeyEvent) -> Result<()> {
         match key.code {
             KeyCode::Esc => {
                 self.cancel_password_flow("Connection cancelled");
@@ -2802,8 +2930,13 @@ impl App {
     /// Connect to a host and open a session
     /// Handles proxy chains (jump hosts) with recursive password prompts
     /// Integrates with credential manager for saved passwords
-    async fn connect_to_host(&mut self, host: HostConfig) -> Result<()> {
+    async fn connect_to_host(
+        &mut self,
+        host: HostConfig,
+        reconnect_target: Option<Uuid>,
+    ) -> Result<()> {
         info!(target: "app", "Initiating connection to {}", host.name);
+        self.reconnect_target_session = reconnect_target;
         self.status_message = Some(format!("Connecting to {}...", host.name));
         self.pending_connection_passwords.clear();
         self.pending_saved_password_hosts.clear();
@@ -3066,6 +3199,12 @@ impl App {
     ) -> Result<()> {
         info!(target: "app", "Connection successful to {}", host_name);
         let connection_id = connection.id;
+        let reconnect_target = self.reconnect_target_session.take();
+        let reconnect_insert_index = reconnect_target.and_then(|id| {
+            self.session_order
+                .iter()
+                .position(|&session_id| session_id == id)
+        });
         self.pending_connection_passwords.clear();
         self.pending_saved_password_hosts.clear();
         self.pending_password_attempts = 0;
@@ -3087,11 +3226,28 @@ impl App {
         }
 
         let autostart_host = connection.host.clone();
+        let keepalive_interval = self.config.settings.ssh.keepalive_interval;
 
         // Open shell channel
         match connection.open_shell(cols, rows) {
             Ok(channel) => {
                 info!(target: "app", "Session created for {}", host_name);
+
+                if let Some(target_session_id) = reconnect_target {
+                    if let Some(stale_channel) = self.channels.remove(&target_session_id) {
+                        self.connections.remove(stale_channel.connection_id);
+                    }
+                    self.sessions.remove(target_session_id);
+                    self.session_order.retain(|&id| id != target_session_id);
+                }
+
+                if keepalive_interval > 0 {
+                    connection
+                        .session()
+                        .set_keepalive(true, keepalive_interval.max(2));
+                }
+                let ssh_session = connection.session().clone();
+
                 // Create session for terminal emulation
                 let session_id = self.sessions.create_session(
                     host_id,
@@ -3127,15 +3283,35 @@ impl App {
                 // Spawn task to handle channel I/O
                 let event_sender = self.events.sender();
                 tokio::task::spawn_blocking(move || {
-                    Self::handle_channel_io(channel, session_id, event_sender, input_rx);
+                    Self::handle_channel_io(
+                        channel,
+                        session_id,
+                        event_sender,
+                        input_rx,
+                        ssh_session,
+                        if keepalive_interval > 0 {
+                            keepalive_interval.max(2)
+                        } else {
+                            0
+                        },
+                    );
                 });
 
                 // Switch to session view
                 self.active_session = Some(session_id);
-                self.session_order.push(session_id);
+                if let Some(insert_index) = reconnect_insert_index {
+                    let index = insert_index.min(self.session_order.len());
+                    self.session_order.insert(index, session_id);
+                } else {
+                    self.session_order.push(session_id);
+                }
                 // Use navigate_to to ensure connections view is saved in history
                 self.navigate_to(View::Session);
-                self.status_message = Some(format!("Connected to {}", host_name));
+                self.status_message = Some(if reconnect_target.is_some() {
+                    format!("Reconnected to {}", host_name)
+                } else {
+                    format!("Connected to {}", host_name)
+                });
 
                 // Store password for SFTP reuse
                 if let Some(pwd) = passwords_used.get(&host_id) {
@@ -3143,6 +3319,11 @@ impl App {
                 }
             }
             Err(e) => {
+                if let Some(target_session_id) = reconnect_target {
+                    if let Some(session) = self.sessions.get_mut(target_session_id) {
+                        session.status = crate::ssh::SessionStatus::Disconnected;
+                    }
+                }
                 self.status_message = Some(format!("Failed to open shell: {}", e));
             }
         }
@@ -3169,11 +3350,19 @@ impl App {
                     Ok(true) => return,
                     Ok(false) => {}
                     Err(e) => {
+                        let had_reconnect_target = self.reconnect_target_session.is_some();
                         self.pending_connection_passwords.clear();
                         self.pending_saved_password_hosts.clear();
                         self.pending_password_attempts = 0;
+                        if let Some(target_session_id) = self.reconnect_target_session.take() {
+                            if let Some(session) = self.sessions.get_mut(target_session_id) {
+                                session.status = crate::ssh::SessionStatus::Disconnected;
+                            }
+                        }
                         self.status_message = Some(format!("Failed to retry connection: {}", e));
-                        self.view = View::Connections;
+                        if !had_reconnect_target {
+                            self.view = View::Connections;
+                        }
                         return;
                     }
                 }
@@ -3195,6 +3384,14 @@ impl App {
         self.pending_connection_passwords.clear();
         self.pending_saved_password_hosts.clear();
         self.pending_password_attempts = 0;
+        if let Some(target_session_id) = self.reconnect_target_session.take() {
+            if let Some(session) = self.sessions.get_mut(target_session_id) {
+                session.status = crate::ssh::SessionStatus::Disconnected;
+            }
+            self.status_message = Some(format!("Reconnect failed: {}", error_msg));
+            return;
+        }
+
         self.status_message = Some(format!("Connection failed: {}", error_msg));
         if return_home {
             self.view = View::Connections;
@@ -3242,23 +3439,19 @@ impl App {
                     });
                 };
 
-                report(&format!(
-                    "Starting tunnel: {} ({})",
-                    tunnel_name, host_name
-                ));
+                report(&format!("Starting tunnel: {} ({})", tunnel_name, host_name));
 
                 match App::connect_via_proxy_chain(&proxy_chain, &passwords) {
                     Ok(conn) => {
-                        if let Err(e) = crate::ssh::run_tunnel(conn, tunnel, shutdown_rx, &mut report) {
+                        if let Err(e) =
+                            crate::ssh::run_tunnel(conn, tunnel, shutdown_rx, &mut report)
+                        {
                             report(&format!(
                                 "Tunnel failed: {} ({}) - {}",
                                 tunnel_name, host_name, e
                             ));
                         } else {
-                            report(&format!(
-                                "Tunnel stopped: {} ({})",
-                                tunnel_name, host_name
-                            ));
+                            report(&format!("Tunnel stopped: {} ({})", tunnel_name, host_name));
                         }
                     }
                     Err(e) => {
@@ -3600,6 +3793,8 @@ impl App {
         session_id: Uuid,
         event_sender: mpsc::UnboundedSender<AppEvent>,
         mut input_rx: mpsc::UnboundedReceiver<Vec<u8>>,
+        ssh_session: ssh2::Session,
+        keepalive_interval_secs: u32,
     ) {
         use std::io::Write;
 
@@ -3608,14 +3803,22 @@ impl App {
 
         // usage 16KB buffer for better throughput
         let mut buf = [0u8; 16384];
+        let keepalive_interval = if keepalive_interval_secs > 0 {
+            Some(Duration::from_secs(keepalive_interval_secs as u64))
+        } else {
+            None
+        };
+        let mut last_io_activity = Instant::now();
 
         loop {
             // Check if channel is closed
             if channel.eof() {
-                let _ = event_sender.send(AppEvent::SshDisconnected {
-                    session_id,
-                    reason: "Channel closed".to_string(),
-                });
+                let reason = if let Ok(code) = channel.exit_status() {
+                    format!("Session exited (code {})", code)
+                } else {
+                    "Channel closed".to_string()
+                };
+                let _ = event_sender.send(AppEvent::SshDisconnected { session_id, reason });
                 break;
             }
 
@@ -3628,6 +3831,7 @@ impl App {
                 }
                 Ok(n) => {
                     did_work = true;
+                    last_io_activity = Instant::now();
                     let data = buf[..n].to_vec();
                     if event_sender
                         .send(AppEvent::SshData { session_id, data })
@@ -3661,6 +3865,7 @@ impl App {
                             });
                             return;
                         }
+                        last_io_activity = Instant::now();
                         inputs_processed += 1;
                         // Don't starve reads if we have massive input (though unlikely for manual input)
                         if inputs_processed > 100 {
@@ -3674,6 +3879,27 @@ impl App {
 
             if inputs_processed > 0 {
                 let _ = channel.flush();
+            }
+
+            if let Some(interval) = keepalive_interval {
+                if last_io_activity.elapsed() >= interval {
+                    match ssh_session.keepalive_send() {
+                        Ok(_) => {
+                            did_work = true;
+                            last_io_activity = Instant::now();
+                        }
+                        Err(e) => {
+                            let io_error: std::io::Error = e.into();
+                            if io_error.kind() != std::io::ErrorKind::WouldBlock {
+                                let _ = event_sender.send(AppEvent::SshDisconnected {
+                                    session_id,
+                                    reason: format!("Keepalive failed: {}", io_error),
+                                });
+                                break;
+                            }
+                        }
+                    }
+                }
             }
 
             // Small sleep ONLY if no work was done to prevent busy loop
@@ -3717,9 +3943,7 @@ impl App {
                 self.escape_prefix_active = false;
                 self.escape_prefix_time = None;
                 if let Some(session_id) = self.active_session {
-                    if let Some(channel) = self.channels.get(&session_id) {
-                        let _ = channel.input_tx.send(vec![0x02]); // Ctrl+B = 0x02
-                    }
+                    self.queue_session_input(session_id, vec![0x02]); // Ctrl+B = 0x02
                 }
             } else {
                 // Enter escape prefix mode
@@ -3797,12 +4021,8 @@ impl App {
 
         // Forward key to SSH session
         if let Some(session_id) = self.active_session {
-            if let Some(channel) = self.channels.get(&session_id) {
-                let data = self.key_to_bytes(&key);
-                if !data.is_empty() {
-                    let _ = channel.input_tx.send(data);
-                }
-            }
+            let data = self.key_to_bytes(&key);
+            self.queue_session_input(session_id, data);
         }
 
         Ok(())
@@ -3862,7 +4082,7 @@ impl App {
                 // Connect to selected host while keeping current sessions
                 if let Some(host) = self.selected_host().cloned() {
                     self.show_connection_overlay = false;
-                    self.connect_to_host(host).await?;
+                    self.connect_to_host(host, None).await?;
                 }
             }
             _ => {}
@@ -3917,12 +4137,27 @@ impl App {
     /// Close current session
     async fn close_current_session(&mut self) {
         if let Some(session_id) = self.active_session {
+            let host_id = self.sessions.get(session_id).map(|s| s.host_id);
+
             // Remove from session order
             self.session_order.retain(|&id| id != session_id);
 
             // Remove channel and session
-            self.channels.remove(&session_id);
+            if let Some(channel) = self.channels.remove(&session_id) {
+                self.connections.remove(channel.connection_id);
+            }
             self.sessions.remove(session_id);
+            if self.reconnect_target_session == Some(session_id) {
+                self.reconnect_target_session = None;
+            }
+
+            if let Some(host_id) = host_id {
+                self.session_passwords.remove(&host_id);
+                let has_remaining = self.sessions.list().iter().any(|s| s.host_id == host_id);
+                if !has_remaining {
+                    self.stop_autostart_tunnels(host_id);
+                }
+            }
 
             // Switch to another session or go back to connections
             if let Some(&next_session) = self.session_order.first() {
@@ -4413,9 +4648,8 @@ impl App {
                                 self.toggle_tunnel_auto_start();
                             }
                             _ => {
-                                self.tunnel_temp_buffer = self
-                                    .tunnel_field_value(tunnel, field)
-                                    .unwrap_or_default();
+                                self.tunnel_temp_buffer =
+                                    self.tunnel_field_value(tunnel, field).unwrap_or_default();
                                 self.tunnel_editing = true;
                             }
                         }
@@ -4516,7 +4750,9 @@ impl App {
             return Ok(());
         }
 
-        let idx = self.tunnel_selected_index.min(self.config.tunnels.len() - 1);
+        let idx = self
+            .tunnel_selected_index
+            .min(self.config.tunnels.len() - 1);
         let name = self.config.tunnels[idx].name().to_string();
         self.config.tunnels.remove(idx);
         self.remove_tunnel_references(&name);
@@ -4657,18 +4893,14 @@ impl App {
                 _ => None,
             },
             TunnelFieldKind::BindPort => match tunnel {
-                crate::config::TunnelConfig::Local { bind_port, .. } => {
-                    Some(bind_port.to_string())
-                }
+                crate::config::TunnelConfig::Local { bind_port, .. } => Some(bind_port.to_string()),
                 crate::config::TunnelConfig::Dynamic { bind_port, .. } => {
                     Some(bind_port.to_string())
                 }
                 _ => None,
             },
             TunnelFieldKind::RemoteHost => match tunnel {
-                crate::config::TunnelConfig::Local { remote_host, .. } => {
-                    Some(remote_host.clone())
-                }
+                crate::config::TunnelConfig::Local { remote_host, .. } => Some(remote_host.clone()),
                 _ => None,
             },
             TunnelFieldKind::RemotePort => match tunnel {
@@ -4687,9 +4919,7 @@ impl App {
                 _ => None,
             },
             TunnelFieldKind::LocalHost => match tunnel {
-                crate::config::TunnelConfig::Remote { local_host, .. } => {
-                    Some(local_host.clone())
-                }
+                crate::config::TunnelConfig::Remote { local_host, .. } => Some(local_host.clone()),
                 _ => None,
             },
             TunnelFieldKind::LocalPort => match tunnel {
@@ -4729,9 +4959,7 @@ impl App {
                     }
                 }
                 TunnelFieldKind::RemoteHost => match tunnel {
-                    crate::config::TunnelConfig::Local { remote_host, .. } => {
-                        *remote_host = value
-                    }
+                    crate::config::TunnelConfig::Local { remote_host, .. } => *remote_host = value,
                     _ => {}
                 },
                 TunnelFieldKind::RemotePort => {
@@ -4748,15 +4976,11 @@ impl App {
                     }
                 }
                 TunnelFieldKind::RemoteAddr => match tunnel {
-                    crate::config::TunnelConfig::Remote { remote_addr, .. } => {
-                        *remote_addr = value
-                    }
+                    crate::config::TunnelConfig::Remote { remote_addr, .. } => *remote_addr = value,
                     _ => {}
                 },
                 TunnelFieldKind::LocalHost => match tunnel {
-                    crate::config::TunnelConfig::Remote { local_host, .. } => {
-                        *local_host = value
-                    }
+                    crate::config::TunnelConfig::Remote { local_host, .. } => *local_host = value,
                     _ => {}
                 },
                 TunnelFieldKind::LocalPort => {
@@ -4784,12 +5008,14 @@ impl App {
                     local_port: 22,
                     auto_start,
                 },
-                crate::config::TunnelConfig::Remote { .. } => crate::config::TunnelConfig::Dynamic {
-                    name,
-                    bind_addr: "127.0.0.1".to_string(),
-                    bind_port: 1080,
-                    auto_start,
-                },
+                crate::config::TunnelConfig::Remote { .. } => {
+                    crate::config::TunnelConfig::Dynamic {
+                        name,
+                        bind_addr: "127.0.0.1".to_string(),
+                        bind_port: 1080,
+                        auto_start,
+                    }
+                }
                 crate::config::TunnelConfig::Dynamic { .. } => crate::config::TunnelConfig::Local {
                     name,
                     bind_addr: "127.0.0.1".to_string(),
@@ -4805,9 +5031,7 @@ impl App {
     fn toggle_tunnel_auto_start(&mut self) {
         if let Some(tunnel) = self.tunnel_edit_draft.as_mut() {
             match tunnel {
-                crate::config::TunnelConfig::Local { auto_start, .. } => {
-                    *auto_start = !*auto_start
-                }
+                crate::config::TunnelConfig::Local { auto_start, .. } => *auto_start = !*auto_start,
                 crate::config::TunnelConfig::Remote { auto_start, .. } => {
                     *auto_start = !*auto_start
                 }
@@ -5494,15 +5718,13 @@ impl App {
                 // This tells the shell to treat the entire paste as a single unit,
                 // preventing slow character-by-character processing
                 if let Some(session_id) = self.active_session {
-                    if let Some(channel) = self.channels.get(&session_id) {
-                        // Bracketed paste mode: wrap text in escape sequences
-                        // \x1b[200~ = start paste, \x1b[201~ = end paste
-                        let mut paste_data = Vec::with_capacity(text.len() + 12);
-                        paste_data.extend_from_slice(b"\x1b[200~");
-                        paste_data.extend_from_slice(text.as_bytes());
-                        paste_data.extend_from_slice(b"\x1b[201~");
-                        let _ = channel.input_tx.send(paste_data);
-                    }
+                    // Bracketed paste mode: wrap text in escape sequences
+                    // \x1b[200~ = start paste, \x1b[201~ = end paste
+                    let mut paste_data = Vec::with_capacity(text.len() + 12);
+                    paste_data.extend_from_slice(b"\x1b[200~");
+                    paste_data.extend_from_slice(text.as_bytes());
+                    paste_data.extend_from_slice(b"\x1b[201~");
+                    self.queue_session_input(session_id, paste_data);
                 }
             }
         } else if let Some(msg) = error_msg {

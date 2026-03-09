@@ -109,13 +109,33 @@ pub fn render_with_state(frame: &mut Frame, state: &RenderState) -> Option<Rect>
 /// Render the status bar at the bottom
 fn render_status_bar(frame: &mut Frame, app: &App, area: Rect) {
     let style = app.theme.status_bar();
+    let active_session_status = app
+        .active_session
+        .and_then(|id| app.sessions.get(id))
+        .map(|s| match s.status {
+            crate::ssh::SessionStatus::Connected => "Connected",
+            crate::ssh::SessionStatus::Connecting => "Connecting",
+            crate::ssh::SessionStatus::Disconnected => "Disconnected",
+        })
+        .unwrap_or("No Session");
+    let active_is_disconnected = app
+        .active_session
+        .and_then(|id| app.sessions.get(id))
+        .map(|s| s.status == crate::ssh::SessionStatus::Disconnected)
+        .unwrap_or(false);
 
     // Left side: View-specific hints
     let hints = match app.view {
         View::Connections => {
             "󰌑 Enter:Connect  e:Edit  E:Editor  n:New  d:Delete  t:Tunnels  f:SFTP  k:Keys  ?:Help"
         }
-        View::Session => "󰌑 C-S-Y:Copy  C-S-I:Paste  Ctrl+B:Prefix(f:Find)",
+        View::Session => {
+            if active_is_disconnected {
+                "󰌑 Any key:Reconnect  Ctrl+Q:Quit"
+            } else {
+                "󰌑 C-S-Y:Copy  C-S-I:Paste  Ctrl+B:Prefix(f:Find)"
+            }
+        }
         View::Sftp => {
             "󰌑 Tab:Switch  Enter:Open  Backspace:Parent  c:Copy  m:Move  d:Delete  Esc:Back  q:Exit"
         }
@@ -127,7 +147,10 @@ fn render_status_bar(frame: &mut Frame, app: &App, area: Rect) {
 
     // Right side: Session count and status
     let session_count = app.sessions.list().len();
-    let status_right = format!("Sessions: {} │ Ctrl+Q:Quit  ", session_count);
+    let status_right = format!(
+        "Status: {} │ Sessions: {} │ Ctrl+Q:Quit  ",
+        active_session_status, session_count
+    );
 
     // Calculate spacing
     let hints_len = hints.len() + 1;
@@ -180,6 +203,20 @@ fn render_status_bar(frame: &mut Frame, app: &App, area: Rect) {
 fn render_status_bar_state(frame: &mut Frame, state: &RenderState, area: Rect) {
     let style = state.theme.status_bar();
     let kb = state.icons.keyboard;
+    let active_session_status = state
+        .active_session
+        .and_then(|id| state.sessions.iter().find(|s| s.id == id))
+        .map(|s| match s.status {
+            crate::ssh::SessionStatus::Connected => "Connected",
+            crate::ssh::SessionStatus::Connecting => "Connecting",
+            crate::ssh::SessionStatus::Disconnected => "Disconnected",
+        })
+        .unwrap_or("No Session");
+    let active_is_disconnected = state
+        .active_session
+        .and_then(|id| state.sessions.iter().find(|s| s.id == id))
+        .map(|s| s.status == crate::ssh::SessionStatus::Disconnected)
+        .unwrap_or(false);
 
     // Left side: View-specific hints (using dynamic keyboard icon)
     let hints = match state.view {
@@ -193,6 +230,8 @@ fn render_status_bar_state(frame: &mut Frame, state: &RenderState, area: Rect) {
                     "{}Ctrl+B: n:Next p:Prev l:List c:Connect w:Close f:Find",
                     kb
                 )
+            } else if active_is_disconnected {
+                format!("{}Any key:Reconnect  Ctrl+Q:Quit", kb)
             } else {
                 format!(
                     "{}C-S-Y:Copy  C-S-I:Paste  Ctrl+B:Prefix(f:Find)  Alt+f:SFTP",
@@ -212,7 +251,10 @@ fn render_status_bar_state(frame: &mut Frame, state: &RenderState, area: Rect) {
 
     // Right side: Session count and status
     let session_count = state.sessions.len();
-    let status_right = format!("Sessions: {} │ Ctrl+Q:Quit  ", session_count);
+    let status_right = format!(
+        "Status: {} │ Sessions: {} │ Ctrl+Q:Quit  ",
+        active_session_status, session_count
+    );
 
     // Calculate spacing
     let hints_len = hints.len() + 1;

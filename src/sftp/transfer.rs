@@ -401,8 +401,12 @@ fn connect_via_proxy_chain(
             ProxyConnection::Direct
         };
 
-        let connection =
-            crate::ssh::SshConnection::connect_via_proxy(chain_host.clone(), proxy, password, None)?;
+        let connection = crate::ssh::SshConnection::connect_via_proxy(
+            chain_host.clone(),
+            proxy,
+            password,
+            None,
+        )?;
 
         if is_last {
             return Ok(connection);

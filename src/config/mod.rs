@@ -166,10 +166,7 @@ impl Config {
     }
 
     /// Resolve tunnels configured for a host
-    pub fn resolve_host_tunnels<'a>(
-        &'a self,
-        host: &'a HostConfig,
-    ) -> Vec<&'a TunnelConfig> {
+    pub fn resolve_host_tunnels<'a>(&'a self, host: &'a HostConfig) -> Vec<&'a TunnelConfig> {
         host.tunnels
             .iter()
             .filter_map(|t| self.find_tunnel(t.name()))

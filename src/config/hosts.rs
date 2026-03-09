@@ -336,14 +336,20 @@ impl TunnelConfig {
                 remote_host,
                 remote_port,
                 ..
-            } => format!("{}:{} → {}:{}", bind_addr, bind_port, remote_host, remote_port),
+            } => format!(
+                "{}:{} → {}:{}",
+                bind_addr, bind_port, remote_host, remote_port
+            ),
             TunnelConfig::Remote {
                 remote_addr,
                 remote_port,
                 local_host,
                 local_port,
                 ..
-            } => format!("{}:{} → {}:{}", remote_addr, remote_port, local_host, local_port),
+            } => format!(
+                "{}:{} → {}:{}",
+                remote_addr, remote_port, local_host, local_port
+            ),
             TunnelConfig::Dynamic {
                 bind_addr,
                 bind_port,

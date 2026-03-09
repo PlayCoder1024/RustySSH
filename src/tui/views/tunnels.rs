@@ -71,10 +71,7 @@ fn render_tunnels_view(
     if config.tunnels.is_empty() {
         let empty_text = vec![
             Line::from(""),
-            Line::from(vec![Span::styled(
-                "  No tunnels defined",
-                theme.text_dim(),
-            )]),
+            Line::from(vec![Span::styled("  No tunnels defined", theme.text_dim())]),
             Line::from(""),
             Line::from(vec![
                 Span::styled("  Press ", theme.text_dim()),
@@ -336,7 +333,10 @@ fn render_tunnel_edit_overlay(
         ])
     };
 
-    frame.render_widget(Paragraph::new(hints).alignment(Alignment::Center), chunks[1]);
+    frame.render_widget(
+        Paragraph::new(hints).alignment(Alignment::Center),
+        chunks[1],
+    );
 }
 
 fn tunnel_fields_for_display(tunnel: &TunnelConfig) -> Vec<(String, String)> {

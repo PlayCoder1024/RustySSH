@@ -31,9 +31,7 @@ pub enum AppEvent {
     /// SFTP transfer progress
     SftpProgress(crate::sftp::TransferProgress),
     /// Tunnel status update
-    TunnelStatus {
-        message: String,
-    },
+    TunnelStatus { message: String },
     /// Error notification
     Error(String),
     /// Connection attempt completed (success or failure)

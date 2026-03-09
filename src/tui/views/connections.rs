@@ -716,9 +716,9 @@ fn proxy_summary(proxy: &Option<crate::config::ProxyConfig>) -> String {
         Some(crate::config::ProxyConfig::JumpHost { host }) => {
             format!("JumpHost: {}", jump_host_ref_display(host))
         }
-        Some(crate::config::ProxyConfig::Socks5 {
-            address, port, ..
-        }) => format!("SOCKS5: {}:{}", address, port),
+        Some(crate::config::ProxyConfig::Socks5 { address, port, .. }) => {
+            format!("SOCKS5: {}:{}", address, port)
+        }
         Some(crate::config::ProxyConfig::Socks4 { address, port, .. }) => {
             format!("SOCKS4: {}:{}", address, port)
         }
@@ -875,12 +875,13 @@ fn render_proxy_edit_overlay(frame: &mut Frame, state: &RenderState, area: Rect)
         ])
     };
 
-    frame.render_widget(Paragraph::new(hints).alignment(Alignment::Center), chunks[1]);
+    frame.render_widget(
+        Paragraph::new(hints).alignment(Alignment::Center),
+        chunks[1],
+    );
 }
 
-fn proxy_fields_for_display(
-    proxy: &Option<crate::config::ProxyConfig>,
-) -> Vec<(String, String)> {
+fn proxy_fields_for_display(proxy: &Option<crate::config::ProxyConfig>) -> Vec<(String, String)> {
     let type_label = match proxy {
         None => "None",
         Some(crate::config::ProxyConfig::JumpHost { .. }) => "JumpHost",
@@ -1038,7 +1039,10 @@ fn render_tunnel_picker_overlay(frame: &mut Frame, state: &RenderState, area: Re
         Span::styled(":Cancel", theme.text_dim()),
     ]);
 
-    frame.render_widget(Paragraph::new(hints).alignment(Alignment::Center), chunks[1]);
+    frame.render_widget(
+        Paragraph::new(hints).alignment(Alignment::Center),
+        chunks[1],
+    );
 }
 
 fn find_host_by_id<'a>(

@@ -1,12 +1,12 @@
 //! SSH tunneling (port forwarding)
 
 use anyhow::{anyhow, Result};
-use std::io::{Read, Write};
-use std::net::{Shutdown, TcpListener, TcpStream};
-use std::sync::mpsc::Receiver;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
+use std::io::{Read, Write};
 use std::net::SocketAddr;
+use std::net::{Shutdown, TcpListener, TcpStream};
+use std::sync::mpsc::Receiver;
 use tokio::sync::mpsc;
 use uuid::Uuid;
 
@@ -215,7 +215,14 @@ where
             bind_port,
             name,
             ..
-        } => run_dynamic_forward(&mut connection, bind_addr, bind_port, name, shutdown, report),
+        } => run_dynamic_forward(
+            &mut connection,
+            bind_addr,
+            bind_port,
+            name,
+            shutdown,
+            report,
+        ),
     }
 }
 
@@ -232,8 +239,14 @@ fn run_local_forward<F>(
 where
     F: FnMut(&str),
 {
-    let listener = TcpListener::bind((bind_addr.as_str(), bind_port))
-        .map_err(|e| anyhow!("Failed to bind local tunnel {}:{}: {}", bind_addr, bind_port, e))?;
+    let listener = TcpListener::bind((bind_addr.as_str(), bind_port)).map_err(|e| {
+        anyhow!(
+            "Failed to bind local tunnel {}:{}: {}",
+            bind_addr,
+            bind_port,
+            e
+        )
+    })?;
     listener.set_nonblocking(true)?;
 
     report(&format!("Tunnel started: {}", name));
@@ -369,8 +382,14 @@ fn run_dynamic_forward<F>(
 where
     F: FnMut(&str),
 {
-    let listener = TcpListener::bind((bind_addr.as_str(), bind_port))
-        .map_err(|e| anyhow!("Failed to bind dynamic tunnel {}:{}: {}", bind_addr, bind_port, e))?;
+    let listener = TcpListener::bind((bind_addr.as_str(), bind_port)).map_err(|e| {
+        anyhow!(
+            "Failed to bind dynamic tunnel {}:{}: {}",
+            bind_addr,
+            bind_port,
+            e
+        )
+    })?;
     listener.set_nonblocking(true)?;
 
     report(&format!("Tunnel started: {}", name));

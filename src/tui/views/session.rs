@@ -55,6 +55,11 @@ pub fn render_state(frame: &mut Frame, state: &RenderState, area: Rect) -> Optio
             if session.status == crate::ssh::SessionStatus::Connecting {
                 let frame = spinner_frames[state.frame_count % spinner_frames.len()];
                 spans.push(Span::styled(format!(" {} ", frame), theme.accent_warning()));
+            } else if session.status == crate::ssh::SessionStatus::Disconnected {
+                spans.push(Span::styled(
+                    format!(" {} ", state.icons.disconnected.trim_end()),
+                    theme.error().add_modifier(Modifier::BOLD),
+                ));
             } else if let Some(progress) = session.progress {
                 if progress < 0.0 {
                     // Indeterminate progress — show spinner
@@ -72,7 +77,11 @@ pub fn render_state(frame: &mut Frame, state: &RenderState, area: Rect) -> Optio
                 }
             } else {
                 // Static icon
-                let icon = if is_active { " " } else { " " };
+                let icon = if is_active {
+                    state.icons.connected.trim_end()
+                } else {
+                    state.icons.connected.trim_end()
+                };
                 spans.push(Span::styled(
                     format!(" {} ", icon),
                     if is_active {
@@ -126,7 +135,25 @@ pub fn render_state(frame: &mut Frame, state: &RenderState, area: Rect) -> Optio
             let paragraph = Paragraph::new(lines);
             frame.render_widget(paragraph, inner);
 
-            if session.cursor_visible && !state.find_overlay_visible {
+            if session.status == crate::ssh::SessionStatus::Disconnected {
+                let disconnected_notice = Paragraph::new(vec![
+                    Line::from(""),
+                    Line::from(vec![Span::styled(
+                        "  Disconnected",
+                        theme.error().add_modifier(Modifier::BOLD),
+                    )]),
+                    Line::from(vec![Span::styled(
+                        "  Press any key to reconnect",
+                        theme.text_dim(),
+                    )]),
+                ]);
+                frame.render_widget(disconnected_notice, inner);
+            }
+
+            if session.status == crate::ssh::SessionStatus::Connected
+                && session.cursor_visible
+                && !state.find_overlay_visible
+            {
                 let (cursor_row, cursor_col) = session.cursor_position;
                 let cursor_x = inner.x + cursor_col;
                 let cursor_y = inner.y + cursor_row;
